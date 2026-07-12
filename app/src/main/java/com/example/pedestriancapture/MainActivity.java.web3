@@ -1,0 +1,2229 @@
+package com.example.pedestriancapture;
+
+import android.Manifest;
+import android.app.AlertDialog;
+import android.content.Intent;
+import android.content.pm.PackageManager;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.graphics.Color;
+import android.graphics.Typeface;
+import android.graphics.drawable.GradientDrawable;
+import android.net.Uri;
+import android.os.Bundle;
+import android.media.Ringtone;
+import android.media.RingtoneManager;
+import android.os.VibrationEffect;
+import android.os.Vibrator;
+import android.provider.Settings;
+import android.text.TextUtils;
+import android.util.TypedValue;
+import android.view.Gravity;
+import android.view.View;
+import android.widget.Button;
+import android.widget.EditText;
+import android.widget.FrameLayout;
+import android.widget.ImageView;
+import android.widget.LinearLayout;
+import android.widget.ScrollView;
+import android.widget.SeekBar;
+import android.widget.Switch;
+import android.widget.TextView;
+import android.widget.Toast;
+
+import androidx.activity.ComponentActivity;
+import androidx.annotation.NonNull;
+import androidx.camera.core.ImageAnalysis;
+import androidx.camera.core.ImageCapture;
+import androidx.camera.core.ImageCaptureException;
+import androidx.camera.core.ImageProxy;
+import androidx.camera.core.Preview;
+import androidx.camera.lifecycle.ProcessCameraProvider;
+import androidx.camera.view.LifecycleCameraController;
+import androidx.camera.view.PreviewView;
+import androidx.core.content.ContextCompat;
+import com.google.common.util.concurrent.ListenableFuture;
+
+import com.example.pedestriancapture.data.CaptureRecord;
+import com.example.pedestriancapture.data.LocalStore;
+import com.example.pedestriancapture.data.PersonTarget;
+import com.example.pedestriancapture.data.AppConfig;
+import com.example.pedestriancapture.data.LicenseManager;
+import com.example.pedestriancapture.data.Web3LicenseManager;
+import com.example.pedestriancapture.vision.DuplicateGuard;
+import com.example.pedestriancapture.vision.MatchResult;
+import com.example.pedestriancapture.vision.FeatureExtractor;
+import com.example.pedestriancapture.vision.FeatureVector;
+import com.example.pedestriancapture.vision.OfflineMatcher;
+import com.example.pedestriancapture.vision.DetectionOverlayView;
+
+import java.io.File;
+import java.text.SimpleDateFormat;
+import java.util.ArrayList;
+import java.util.Calendar;
+import java.util.Date;
+import java.util.HashMap;
+import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+
+public class MainActivity extends ComponentActivity {
+    private static final int REQ_CAMERA = 10;
+    private static final int REQ_PHOTO = 11;
+
+    // ===== 颜色体系 =====
+    private static final int C_PRIMARY = Color.parseColor("#B45309");
+    private static final int C_PRIMARY_LIGHT = Color.parseColor("#EFF6FF");
+    private static final int C_BG = Color.parseColor("#F1F5F9");
+    private static final int C_CARD = Color.parseColor("#FFFFFF");
+    private static final int C_TEXT = Color.parseColor("#1E293B");
+    private static final int C_TEXT_2 = Color.parseColor("#64748B");
+    private static final int C_TEXT_HINT = Color.parseColor("#94A3B8");
+    private static final int C_DANGER = Color.parseColor("#EF4444");
+    private static final int C_SUCCESS = Color.parseColor("#22C55E");
+    private static final int C_WARNING = Color.parseColor("#F59E0B");
+    private static final int C_DIVIDER = Color.parseColor("#E2E8F0");
+    private static final int C_NAV_BG = Color.parseColor("#FFFFFF");
+
+    // ===== 全局状态 =====
+    private LocalStore store;
+    private AppConfig config;
+    private LicenseManager license;
+    private Web3LicenseManager web3License;
+    private final OfflineMatcher matcher = new OfflineMatcher();
+    private final DuplicateGuard duplicateGuard = new DuplicateGuard();
+    private boolean licenseBlocked = false; // 试用过期且未激活
+
+    private LinearLayout root, content, bottomNav;
+    private TextView topTitle, topStatus;
+    private LifecycleCameraController cameraController;
+    private PreviewView currentPreviewView;
+    private boolean cameraBound = false;
+    private Uri selectedPhotoUri;
+    private TextView selectedPhotoLabel;
+    private float threshold = 0.72f;
+    private long lastAnalysisAt = 0L;
+    private int currentTab = 0;
+    private boolean isMonitoring = false;
+    private long monitorStartTime = 0L;
+    private TextView monitorStatusTv;
+    private TextView monitorTimerTv;
+    private Button startMonitorBtn;
+    private Button stopMonitorBtn;
+    private final java.util.Timer[] statusTimer = {null};
+
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        store = new LocalStore(this);
+        config = new AppConfig(this);
+        license = new LicenseManager(this);
+        web3License = new Web3LicenseManager(this);
+        threshold = config.getThreshold();
+        duplicateGuard.setIntervalSeconds(config.getDedupInterval());
+        buildShell();
+        switchTab(0);
+        checkLicense();
+        registerStoredTargetsWithPhotos();
+    }
+
+    // ==================== 主框架 ====================
+
+    private void buildShell() {
+        root = new LinearLayout(this);
+        root.setOrientation(LinearLayout.VERTICAL);
+        root.setBackgroundColor(C_BG);
+
+        // 顶部标题栏
+        LinearLayout topBar = new LinearLayout(this);
+        topBar.setOrientation(LinearLayout.VERTICAL);
+        topBar.setBackgroundColor(C_PRIMARY);
+        topBar.setPadding(0, dp(48), 0, dp(14));
+
+        topTitle = new TextView(this);
+        topTitle.setTextColor(Color.WHITE);
+        topTitle.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        topTitle.setTypeface(Typeface.DEFAULT_BOLD);
+        topTitle.setGravity(Gravity.CENTER);
+        topBar.addView(topTitle);
+
+        topStatus = new TextView(this);
+        topStatus.setTextColor(Color.parseColor("#BFDBFE"));
+        topStatus.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+        topStatus.setGravity(Gravity.CENTER);
+        topStatus.setPadding(0, dp(3), 0, 0);
+        topBar.addView(topStatus);
+
+        root.addView(topBar);
+
+        // 内容区域
+        content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
+
+        // 底部导航
+        bottomNav = new LinearLayout(this);
+        bottomNav.setBackgroundColor(C_NAV_BG);
+        bottomNav.setOrientation(LinearLayout.VERTICAL);
+
+        View divider = new View(this);
+        divider.setBackgroundColor(C_DIVIDER);
+        bottomNav.addView(divider, new LinearLayout.LayoutParams(-1, dp(1)));
+
+        LinearLayout navRow = new LinearLayout(this);
+        navRow.setPadding(0, dp(8), 0, dp(24));
+        navRow.setGravity(Gravity.CENTER);
+        navRow.addView(navTab("📷", "监控", 0));
+        navRow.addView(navTab("👥", "底库", 1));
+        navRow.addView(navTab("📸", "记录", 2));
+        navRow.addView(navTab("📊", "统计", 3));
+        navRow.addView(navTab("⚙️", "设置", 4));
+        bottomNav.addView(navRow);
+
+        root.addView(bottomNav);
+        setContentView(root);
+    }
+
+    private LinearLayout navTab(String icon, String label, final int tab) {
+        LinearLayout tabLayout = new LinearLayout(this);
+        tabLayout.setOrientation(LinearLayout.VERTICAL);
+        tabLayout.setGravity(Gravity.CENTER);
+        tabLayout.setPadding(dp(8), dp(4), dp(8), dp(4));
+        tabLayout.setOnClickListener(v -> switchTab(tab));
+
+        TextView iconView = new TextView(this);
+        iconView.setText(icon);
+        iconView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        iconView.setGravity(Gravity.CENTER);
+        iconView.setTag("nav_icon_" + tab);
+        tabLayout.addView(iconView);
+
+        TextView labelView = new TextView(this);
+        labelView.setText(label);
+        labelView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        labelView.setGravity(Gravity.CENTER);
+        labelView.setTag("nav_label_" + tab);
+        tabLayout.addView(labelView);
+
+        tabLayout.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+        return tabLayout;
+    }
+
+    private void switchTab(int tab) {
+        currentTab = tab;
+        // 更新导航栏高亮
+        for (int i = 0; i < 5; i++) {
+            TextView label = (TextView) bottomNav.findViewWithTag("nav_label_" + i);
+            if (label != null) {
+                label.setTextColor(i == tab ? C_PRIMARY : C_TEXT_HINT);
+            }
+        }
+        content.removeAllViews();
+        // 停止相机当离开监控页
+        if (tab != 0) {
+            stopStatusTimer();
+            stopCamera();
+        }
+        switch (tab) {
+            case 0: topTitle.setText("实时监控"); showMonitor(); break;
+            case 1: topTitle.setText("VIP客户库"); showTargets(); break;
+            case 2: topTitle.setText("到店记录"); showRecords(); break;
+            case 3: topTitle.setText("统计分析"); showStats(); break;
+            case 4: topTitle.setText("设置"); showSettings(); break;
+        }
+        updateTopStatus();
+    }
+
+    private void updateTopStatus() {
+        int targetCount = store.loadTargets().size();
+        int recordCount = store.loadRecords().size();
+        String status;
+        switch (currentTab) {
+            case 0: status = "关注 " + targetCount + " 人 · 识别 " + recordCount + " 次"; break;
+            case 1: status = "共 " + targetCount + " 位VIP客户"; break;
+            case 2: status = "共 " + recordCount + " 条到店记录"; break;
+            case 3: status = "数据统计与分析"; break;
+            case 4: status = "应用设置"; break;
+            default: status = ""; break;
+        }
+        topStatus.setText(status);
+    }
+
+    // ==================== 页面1: 实时监控 ====================
+
+    private void showMonitor() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(C_BG);
+        LinearLayout box = vBox();
+        box.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        // ===== 值守控制面板 =====
+        LinearLayout controlCard = card();
+        controlCard.setPadding(dp(20), dp(20), dp(20), dp(20));
+
+        // 状态指示灯 + 文字
+        LinearLayout statusRow = hBox();
+        statusRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        TextView statusDot = new TextView(this);
+        statusDot.setText("⚪");
+        statusDot.setTextSize(TypedValue.COMPLEX_UNIT_SP, 28);
+        statusDot.setTag("status_dot");
+        statusRow.addView(statusDot);
+
+        LinearLayout statusInfo = vBox();
+        statusInfo.setPadding(dp(12), 0, 0, 0);
+        monitorStatusTv = tv("未启动值守", C_TEXT, 16, Typeface.BOLD);
+        statusInfo.addView(monitorStatusTv);
+        monitorTimerTv = tv("点击下方按钮开始监控", C_TEXT_2, 12, Typeface.NORMAL);
+        monitorTimerTv.setPadding(0, dp(2), 0, 0);
+        statusInfo.addView(monitorTimerTv);
+        statusRow.addView(statusInfo);
+
+        View flexStatus = new View(this);
+        flexStatus.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        statusRow.addView(flexStatus);
+
+        controlCard.addView(statusRow);
+        controlCard.addView(spacer(dp(16)));
+
+        // 开始值守按钮（大号醒目）
+        startMonitorBtn = new Button(this);
+        startMonitorBtn.setText("▶  开始值守");
+        startMonitorBtn.setAllCaps(false);
+        startMonitorBtn.setTextColor(Color.WHITE);
+        startMonitorBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        startMonitorBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        startMonitorBtn.setPadding(dp(20), dp(16), dp(20), dp(16));
+        GradientDrawable startBg = new GradientDrawable();
+        startBg.setCornerRadius(dp(12));
+        startBg.setColor(C_PRIMARY);
+        startMonitorBtn.setBackground(startBg);
+        startMonitorBtn.setOnClickListener(v -> startMonitoring(preview));
+        controlCard.addView(startMonitorBtn, lp(-1, -2, 0, 0, 0, 0));
+
+        controlCard.addView(spacer(dp(10)));
+
+        // 停止按钮
+        stopMonitorBtn = new Button(this);
+        stopMonitorBtn.setText("⏹  停止值守");
+        stopMonitorBtn.setAllCaps(false);
+        stopMonitorBtn.setTextColor(C_TEXT_2);
+        stopMonitorBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 15);
+        stopMonitorBtn.setPadding(dp(20), dp(14), dp(20), dp(14));
+        GradientDrawable stopBg = new GradientDrawable();
+        stopBg.setCornerRadius(dp(12));
+        stopBg.setColor(Color.parseColor("#F1F5F9"));
+        stopMonitorBtn.setBackground(stopBg);
+        stopMonitorBtn.setOnClickListener(v -> stopMonitoring());
+        stopMonitorBtn.setEnabled(false);
+        stopMonitorBtn.setAlpha(0.5f);
+        controlCard.addView(stopMonitorBtn, lp(-1, -2, 0, 0, 0, 0));
+
+        box.addView(controlCard, lp(-1, -2, 0, 0, 0, dp(12)));
+
+        // ===== 阈值卡片 =====
+        LinearLayout thresholdCard = card();
+        thresholdCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        LinearLayout thresholdHeader = hBox();
+        thresholdHeader.setGravity(Gravity.CENTER_VERTICAL);
+        TextView thresholdTitle = tv("匹配阈值", C_TEXT, 14, Typeface.NORMAL);
+        thresholdHeader.addView(thresholdTitle);
+        int tc = store.loadTargets().size();
+        String adaptHint = tc <= 1 ? " · 精确匹配" : tc <= 3 ? " · 标准匹配" : tc <= 10 ? " · 宽松匹配" : " · 大底库";
+        TextView adaptTv = tv(adaptHint, C_TEXT_2, 11, Typeface.NORMAL);
+        thresholdHeader.addView(adaptTv);
+        View flex = new View(this);
+        flex.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        thresholdHeader.addView(flex);
+        final TextView thresholdValue = tv(Math.round(threshold * 100) + "%", C_PRIMARY, 18, Typeface.BOLD);
+        thresholdHeader.addView(thresholdValue);
+        thresholdCard.addView(thresholdHeader);
+
+        SeekBar thresholdBar = new SeekBar(this);
+        thresholdBar.setMax(40);
+        thresholdBar.setProgress(Math.round((threshold - 0.55f) * 100));
+        thresholdBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean f) {
+                threshold = 0.55f + p / 100f;
+                thresholdValue.setText(Math.round(threshold * 100) + "%");
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {
+                config.setThreshold(threshold);
+            }
+        });
+        thresholdCard.addView(thresholdBar, lp(-1, -2, 0, dp(8), 0, 0));
+        box.addView(thresholdCard, lp(-1, -2, 0, 0, 0, dp(12)));
+
+        // ===== 相机预览 =====
+        LinearLayout previewCard = card();
+        FrameLayout previewContainer = new FrameLayout(this);
+        preview = new PreviewView(this);
+        preview.setScaleType(PreviewView.ScaleType.FILL_CENTER);
+        previewContainer.addView(preview, new FrameLayout.LayoutParams(-1, dp(320)));
+
+        // 检测叠加层
+        overlayView = new DetectionOverlayView(this);
+        previewContainer.addView(overlayView, new FrameLayout.LayoutParams(-1, dp(320)));
+
+        previewCard.addView(previewContainer, lp(-1, -2, 0, 0, 0, 0));
+        box.addView(previewCard, lp(-1, -2, 0, 0, 0, dp(12)));
+
+        // 实时检测状态条
+        liveDetectTv = tv("📋 等待开始值守...", C_TEXT_2, 12, Typeface.NORMAL);
+        liveDetectTv.setPadding(dp(12), dp(8), dp(12), dp(8));
+        liveDetectTv.setBackgroundColor(Color.parseColor("#F8FAFC"));
+        box.addView(liveDetectTv, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        // ===== 提示信息 =====
+        TextView hint = tv("💡 点击「开始值守」启动摄像头监控\n   检测到VIP客户时自动识别并提醒\n   去重间隔：" + config.getDedupInterval() + "秒",
+                C_TEXT_2, 13, Typeface.NORMAL);
+        hint.setLineSpacing(dp(4), 1f);
+        hint.setPadding(dp(8), dp(8), dp(8), dp(8));
+        box.addView(hint);
+
+        scroll.addView(box);
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+
+        // 恢复值守状态显示
+        if (isMonitoring) {
+            updateMonitorUIRunning();
+            // 重新绑定相机到新的 PreviewView
+            if (cameraController != null) {
+                cameraController.bindToLifecycle(this);
+                preview.setController(cameraController);
+            }
+        }
+    }
+
+    private PreviewView preview;
+    private DetectionOverlayView overlayView;
+    private TextView liveDetectTv; // 实时检测状态
+
+    private void startMonitoring(PreviewView previewView) {
+        if (licenseBlocked) {
+            showActivationDialog();
+            return;
+        }
+        if (!hasCameraPermission()) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+            return;
+        }
+        isMonitoring = true;
+        monitorStartTime = System.currentTimeMillis();
+        startCamera(previewView);
+        updateMonitorUIRunning();
+        startStatusTimer();
+    }
+
+    private void stopMonitoring() {
+        isMonitoring = false;
+        stopCamera();
+        stopStatusTimer();
+        updateMonitorUIStopped();
+        if (overlayView != null) overlayView.clear();
+        if (liveDetectTv != null) {
+            liveDetectTv.setText("📋 值守已停止");
+            liveDetectTv.setTextColor(C_TEXT_2);
+        }
+    }
+
+    private void updateMonitorUIRunning() {
+        TextView statusDot = (TextView) content.findViewWithTag("status_dot");
+        if (statusDot != null) statusDot.setText("🔴");
+        if (monitorStatusTv != null) monitorStatusTv.setText("VIP值守中...");
+        if (monitorStatusTv != null) monitorStatusTv.setTextColor(C_DANGER);
+        if (startMonitorBtn != null) { startMonitorBtn.setEnabled(false); startMonitorBtn.setAlpha(0.5f); }
+        if (stopMonitorBtn != null) { stopMonitorBtn.setEnabled(true); stopMonitorBtn.setAlpha(1.0f); }
+    }
+
+    private void updateMonitorUIStopped() {
+        TextView statusDot = (TextView) content.findViewWithTag("status_dot");
+        if (statusDot != null) statusDot.setText("⚪");
+        if (monitorStatusTv != null) { monitorStatusTv.setText("已停止值守"); monitorStatusTv.setTextColor(C_TEXT); }
+        if (monitorTimerTv != null) monitorTimerTv.setText("点击「开始值守」重新启动");
+        if (startMonitorBtn != null) { startMonitorBtn.setEnabled(true); startMonitorBtn.setAlpha(1.0f); }
+        if (stopMonitorBtn != null) { stopMonitorBtn.setEnabled(false); stopMonitorBtn.setAlpha(0.5f); }
+        updateTopStatus();
+    }
+
+    private void startStatusTimer() {
+        stopStatusTimer();
+        statusTimer[0] = new java.util.Timer();
+        statusTimer[0].scheduleAtFixedRate(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                runOnUiThread(() -> {
+                    if (isMonitoring && monitorTimerTv != null) {
+                        long elapsed = System.currentTimeMillis() - monitorStartTime;
+                        int hours = (int) (elapsed / 3600000);
+                        int mins = (int) ((elapsed % 3600000) / 60000);
+                        int secs = (int) ((elapsed % 60000) / 1000);
+                        String timeStr = String.format(Locale.CHINA, "%02d:%02d:%02d", hours, mins, secs);
+                        int targetCount = store.loadTargets().size();
+                        int recordCount = store.loadRecords().size();
+                        monitorTimerTv.setText("⏱ 值守时长 " + timeStr + " · 关注 " + targetCount + " 人 · 已识别 " + recordCount + " 次");
+                    }
+                });
+            }
+        }, 0, 1000);
+    }
+
+    private void stopStatusTimer() {
+        if (statusTimer[0] != null) {
+            statusTimer[0].cancel();
+            statusTimer[0] = null;
+        }
+    }
+
+    private void startCamera(PreviewView previewView) {
+        if (!hasCameraPermission()) {
+            requestPermissions(new String[]{Manifest.permission.CAMERA}, REQ_CAMERA);
+            return;
+        }
+        registerStoredTargetsWithPhotos();
+        currentPreviewView = previewView;
+        if (cameraController == null) {
+            cameraController = new LifecycleCameraController(this);
+            cameraController.setCameraSelector(androidx.camera.core.CameraSelector.DEFAULT_BACK_CAMERA);
+            cameraController.setEnabledUseCases(
+                    androidx.camera.view.CameraController.IMAGE_CAPTURE
+                    | androidx.camera.view.CameraController.IMAGE_ANALYSIS);
+        }
+        // 绑定到生命周期并设置到 PreviewView
+        cameraController.bindToLifecycle(this);
+        previewView.setController(cameraController);
+        cameraBound = true;
+
+        // ImageAnalysis analyzer - 使用真实特征提取
+        cameraController.setImageAnalysisBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST);
+        cameraController.setImageAnalysisAnalyzer(getMainExecutor(), image -> {
+            long now = System.currentTimeMillis();
+            if (now - lastAnalysisAt > 450) {
+                lastAnalysisAt = now;
+                // 从帧提取特征向量
+                FeatureVector frameFeature = FeatureExtractor.extractFromFrame(image, null);
+                MatchResult result = matcher.match(store.loadTargets(), frameFeature, threshold);
+
+                // 更新叠加层
+                if (overlayView != null) {
+                    DetectionOverlayView.DetectionResult dr = new DetectionOverlayView.DetectionResult();
+                    dr.personRect = result.personRect;
+                    dr.faceRect = result.faceRect;
+                    dr.matched = result.matched;
+                    dr.targetName = result.target != null ? result.target.name : null;
+                    dr.totalScore = result.score;
+                    dr.dimensionScores = result.dimensionScores;
+                    dr.dimensionLabels = new String[]{"颜色", "纹理", "边缘", "体态", "姿态", "综合"};
+                    overlayView.setPreviewSize(image.getWidth(), image.getHeight());
+                    overlayView.updateDetection(dr);
+                }
+
+                // 更新实时状态条
+                if (liveDetectTv != null) {
+                    if (result.matched) {
+                        liveDetectTv.setText(String.format("🎯 匹配: %s | 总分: %d%% | 模式: %s",
+                            result.target.name, Math.round(result.score * 100), result.mode));
+                        liveDetectTv.setTextColor(Color.parseColor("#16A34A"));
+                    } else if (result.personRect != null) {
+                        liveDetectTv.setText("👁 检测到运动目标，匹配中...");
+                        liveDetectTv.setTextColor(Color.parseColor("#D97706"));
+                    } else {
+                        liveDetectTv.setText("🔍 监控中... 未检测到运动目标");
+                        liveDetectTv.setTextColor(C_TEXT_2);
+                    }
+                }
+
+                if (result.matched && duplicateGuard.canCapture(result.target.id)) {
+                    captureHit(result);
+                }
+            }
+            image.close();
+        });
+
+        topStatus.setText("🔴 监控中 · 阈值 " + Math.round(threshold * 100) + "%");
+    }
+
+    private void stopCamera() {
+        if (cameraController != null) {
+            cameraController.unbind();
+        }
+        cameraBound = false;
+        if (currentTab == 0) {
+            topStatus.setText("已停止值守");
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        super.onDestroy();
+        stopStatusTimer();
+        stopCamera();
+    }
+
+    private void captureHit(MatchResult result) {
+        CaptureRecord record = new CaptureRecord(result.target.id, result.target.name, result.score, result.mode);
+        File dir = new File(getFilesDir(), "captures");
+        if (!dir.exists()) dir.mkdirs();
+        File image = new File(dir, record.id + ".jpg");
+        record.imagePath = image.getAbsolutePath();
+
+        if (cameraController == null) {
+            store.saveRecord(record);
+            alert(record, result);
+            return;
+        }
+        ImageCapture.OutputFileOptions options = new ImageCapture.OutputFileOptions.Builder(image).build();
+        cameraController.takePicture(options, getMainExecutor(), new ImageCapture.OnImageSavedCallback() {
+            @Override public void onImageSaved(@NonNull ImageCapture.OutputFileResults r) {
+                store.saveRecord(record);
+                alert(record, result);
+            }
+            @Override public void onError(@NonNull ImageCaptureException e) {
+                record.imagePath = "";
+                store.saveRecord(record);
+                alert(record, result);
+            }
+        });
+    }
+
+    private void alert(CaptureRecord record, MatchResult matchResult) {
+        if (config.isVibrationEnabled()) {
+            Vibrator vibrator = getSystemService(Vibrator.class);
+            if (vibrator != null) {
+                vibrator.vibrate(VibrationEffect.createOneShot(400, VibrationEffect.DEFAULT_AMPLITUDE));
+            }
+        }
+        // 通知铃声
+        if (config.isAlarmSoundEnabled()) {
+            playAlarmSound();
+        }
+
+        LinearLayout dialogContent = vBox();
+        dialogContent.setPadding(dp(16), dp(8), dp(16), dp(8));
+
+        if (!TextUtils.isEmpty(record.imagePath)) {
+            File imgFile = new File(record.imagePath);
+            if (imgFile.exists()) {
+                Bitmap bitmap = BitmapFactory.decodeFile(record.imagePath);
+                if (bitmap != null) {
+                    ImageView imageView = new ImageView(this);
+                    int maxW = dp(280), maxH = dp(350);
+                    float scale = Math.min((float) maxW / bitmap.getWidth(), (float) maxH / bitmap.getHeight());
+                    int w = Math.round(bitmap.getWidth() * scale);
+                    int h = Math.round(bitmap.getHeight() * scale);
+                    imageView.setImageBitmap(Bitmap.createScaledBitmap(bitmap, w, h, true));
+                    dialogContent.addView(imageView, lp(w, h, 0, 0, 0, dp(12)));
+                }
+            }
+        }
+
+        TextView info = tv("🎯 目标：" + record.targetName
+                + "\n📊 匹配分：" + Math.round(record.score * 100) + "%"
+                + "\n🔍 模式：" + record.mode
+                + "\n⏰ " + new SimpleDateFormat("HH:mm:ss", Locale.CHINA).format(new Date(record.capturedAt)),
+                C_TEXT, 14, Typeface.NORMAL);
+        info.setLineSpacing(dp(4), 1f);
+        dialogContent.addView(info);
+
+        // 六维度评分详情
+        if (matchResult != null && matchResult.dimensionScores != null) {
+            String[] labels = {"颜色", "纹理", "边缘", "体态", "姿态", "综合"};
+            StringBuilder sb = new StringBuilder();
+            for (int i = 0; i < matchResult.dimensionScores.length && i < labels.length; i++) {
+                int pct = Math.round(matchResult.dimensionScores[i] * 100);
+                String bar = pct >= 70 ? "🟩" : pct >= 50 ? "🟨" : "🟥";
+                sb.append(labels[i]).append(" ").append(bar).append(" ").append(pct).append("%");
+                if (i < matchResult.dimensionScores.length - 1) sb.append("  ");
+            }
+            TextView dimInfo = tv(sb.toString(), C_TEXT_2, 11, Typeface.NORMAL);
+            dimInfo.setLineSpacing(dp(2), 1f);
+            dimInfo.setPadding(0, dp(4), 0, 0);
+            dialogContent.addView(dimInfo);
+        }
+
+        // 倒计时显示
+        final TextView countdownTv = tv("", C_PRIMARY, 13, Typeface.NORMAL);
+        countdownTv.setGravity(Gravity.CENTER);
+        countdownTv.setPadding(0, dp(10), 0, 0);
+        dialogContent.addView(countdownTv);
+
+        final AlertDialog[] dialogHolder = new AlertDialog[1];
+        final int[] countdown = {5};
+        countdownTv.setText("⏳ " + countdown[0] + " 秒后自动继续值守...");
+
+        dialogHolder[0] = new AlertDialog.Builder(this)
+                .setTitle("🚨 发现VIP客户")
+                .setView(dialogContent)
+                .setPositiveButton("查看记录", (d, w) -> switchTab(2))
+                .setNegativeButton("立即继续", null)
+                .setCancelable(false)
+                .show();
+
+        final java.util.Timer timer = new java.util.Timer();
+        timer.scheduleAtFixedRate(new java.util.TimerTask() {
+            @Override
+            public void run() {
+                runOnUiThread(() -> {
+                    countdown[0]--;
+                    if (countdown[0] <= 0) {
+                        timer.cancel();
+                        if (dialogHolder[0] != null && dialogHolder[0].isShowing()) {
+                            dialogHolder[0].dismiss();
+                        }
+                        updateTopStatus();
+                    } else {
+                        countdownTv.setText("⏳ " + countdown[0] + " 秒后自动继续值守...");
+                    }
+                });
+            }
+        }, 1000, 1000);
+    }
+
+    // ==================== 页面2: VIP客户库 ====================
+
+    private void showTargets() {
+        showTargets(false);
+    }
+
+    private void showTargets(final boolean scrollToList) {
+        final ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(C_BG);
+        final LinearLayout box = vBox();
+        box.setPadding(dp(16), dp(16), dp(16), dp(24));
+        scroll.addView(box);
+
+        // 底库列表（放在表单之前，让新条目立即可见）
+        List<PersonTarget> targets = store.loadTargets();
+        box.addView(sectionTitle("📋 当前底库（" + targets.size() + "）"));
+
+        if (targets.isEmpty()) {
+            LinearLayout emptyCard = card();
+            emptyCard.setPadding(dp(20), dp(40), dp(20), dp(40));
+            TextView empty = tv("暂无VIP客户\n\n请在下方录入VIP客户信息", C_TEXT_HINT, 14, Typeface.NORMAL);
+            empty.setGravity(Gravity.CENTER);
+            emptyCard.addView(empty);
+            box.addView(emptyCard, lp(-1, -2, 0, dp(8), 0, 0));
+        } else {
+            for (PersonTarget target : targets) {
+                LinearLayout itemCard = card();
+                itemCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+
+                LinearLayout header = hBox();
+                header.setGravity(Gravity.CENTER_VERTICAL);
+                TextView nameTv = tv(target.name, C_TEXT, 16, Typeface.BOLD);
+                header.addView(nameTv);
+
+                if (!"未设置".equals(target.gender) && !TextUtils.isEmpty(target.gender)) {
+                    View gap = new View(this);
+                    gap.setLayoutParams(new LinearLayout.LayoutParams(dp(8), 0));
+                    header.addView(gap);
+                    header.addView(tag(target.gender, Color.parseColor("#E0E7FF"), Color.parseColor("#4338CA")));
+                }
+                // 照片标识
+                if (!TextUtils.isEmpty(target.photoUri)) {
+                    header.addView(tag("📷照片", Color.parseColor("#FEF3C7"), Color.parseColor("#92400E")));
+                }
+                View flex = new View(this);
+                flex.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+                header.addView(flex);
+
+                // 删除按钮
+                TextView deleteBtn = tv("🗑️", C_TEXT_HINT, 18, Typeface.NORMAL);
+                deleteBtn.setPadding(dp(8), 0, dp(8), 0);
+                deleteBtn.setOnClickListener(v -> {
+                    new AlertDialog.Builder(this)
+                            .setTitle("删除确认")
+                            .setMessage("确定要删除「" + target.name + "」吗？")
+                            .setPositiveButton("删除", (d, w) -> {
+                                store.deleteTarget(target.id);
+                                matcher.unregisterTarget(target.id); // 移除特征缓存
+                                Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show();
+                                showTargets();
+                            })
+                            .setNegativeButton("取消", null)
+                            .show();
+                });
+                header.addView(deleteBtn);
+                itemCard.addView(header);
+                itemCard.addView(spacer(dp(6)));
+
+                StringBuilder details = new StringBuilder();
+                if (!TextUtils.isEmpty(target.clothing)) details.append("👕 ").append(target.clothing).append("\n");
+                if (!TextUtils.isEmpty(target.accessories)) details.append("🎒 ").append(target.accessories).append("\n");
+                if (!TextUtils.isEmpty(target.bodyShape)) details.append("🚶 ").append(target.bodyShape);
+                if (details.length() > 0) {
+                    TextView detailTv = tv(details.toString().trim(), C_TEXT_2, 13, Typeface.NORMAL);
+                    detailTv.setLineSpacing(dp(3), 1f);
+                    itemCard.addView(detailTv);
+                }
+
+                if (!TextUtils.isEmpty(target.photoUri)) {
+                    itemCard.addView(spacer(dp(8)));
+                    Button verifyBtn = btn("反向验证照片特征", Color.parseColor("#E0F2FE"), Color.parseColor("#0369A1"));
+                    verifyBtn.setOnClickListener(v -> verifyTargetPhoto(target));
+                    itemCard.addView(verifyBtn);
+                }
+
+                box.addView(itemCard, lp(-1, -2, 0, dp(6), 0, 0));
+            }
+        }
+
+        // 录入卡片（放在列表之后）
+        box.addView(spacer(dp(20)));
+        box.addView(sectionTitle("➕ 添加VIP客户"));
+
+        LinearLayout formCard = card();
+        formCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        final EditText nameField = input("姓名 / 编号");
+        formCard.addView(nameField);
+        formCard.addView(spacer(dp(8)));
+        final EditText genderField = input("性别");
+        formCard.addView(genderField);
+        formCard.addView(spacer(dp(8)));
+        final EditText clothingField = input("衣着特征（如黑色上衣、蓝色长裤）");
+        formCard.addView(clothingField);
+        formCard.addView(spacer(dp(8)));
+        final EditText accessoriesField = input("配饰（如帽子、口罩、背包）");
+        formCard.addView(accessoriesField);
+        formCard.addView(spacer(dp(8)));
+        final EditText bodyShapeField = input("体态（如高瘦、中等、步态明显）");
+        formCard.addView(bodyShapeField);
+        formCard.addView(spacer(dp(8)));
+
+        selectedPhotoUri = null;
+        selectedPhotoLabel = tv("未选择照片。请上传本地照片，APP 会从照片提取VIP客户特征。", C_TEXT_2, 13, Typeface.NORMAL);
+        selectedPhotoLabel.setLineSpacing(dp(3), 1f);
+        formCard.addView(selectedPhotoLabel);
+        formCard.addView(spacer(dp(8)));
+
+        Button pickPhotoBtn = btn("上传本地照片", Color.parseColor("#E0F2FE"), Color.parseColor("#0369A1"));
+        pickPhotoBtn.setOnClickListener(v -> pickLocalPhoto());
+        formCard.addView(pickPhotoBtn);
+        formCard.addView(spacer(dp(12)));
+
+        Button saveBtn = btn("保存到底库", C_PRIMARY, Color.WHITE);
+        saveBtn.setOnClickListener(v -> {
+            if (selectedPhotoUri == null) {
+                Toast.makeText(this, "请先上传本地照片，当前版本不再支持网络图片 URL", Toast.LENGTH_LONG).show();
+                return;
+            }
+            PersonTarget target = new PersonTarget(textOr(nameField, "未命名目标"));
+            target.gender = textOr(genderField, "未设置");
+            target.clothing = clothingField.getText().toString();
+            target.accessories = accessoriesField.getText().toString();
+            target.bodyShape = bodyShapeField.getText().toString();
+            target.photoUri = selectedPhotoUri.toString();
+
+            Bitmap photo = loadBitmapFromUri(selectedPhotoUri);
+            if (photo == null) {
+                Toast.makeText(this, "照片读取失败，请重新选择一张清晰的本地照片", Toast.LENGTH_LONG).show();
+                return;
+            }
+
+            store.saveTarget(target);
+            matcher.registerTargetWithPhoto(target, photo);
+            OfflineMatcher.VerificationResult verification = matcher.verifyTargetWithPhoto(target, photo);
+            photo.recycle();
+
+            String message = verification.passed
+                    ? "✅ 已加入VIP库，照片特征验证通过：" + Math.round(verification.score * 100) + "%"
+                    : "⚠️ 已加入VIP库，但照片特征验证偏低：" + Math.round(verification.score * 100) + "%";
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            selectedPhotoUri = null;
+            showTargets(true);
+        });
+        formCard.addView(saveBtn);
+        box.addView(formCard, lp(-1, -2, 0, dp(8), 0, dp(20)));
+
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+        updateTopStatus();
+
+        // 保存后滚动到顶部，让用户看到新添加的条目
+        if (scrollToList) {
+            scroll.post(() -> scroll.fullScroll(ScrollView.FOCUS_UP));
+        }
+    }
+
+    // ==================== 页面3: 到店记录 ====================
+
+    private void showRecords() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(C_BG);
+        LinearLayout box = vBox();
+        box.setPadding(dp(16), dp(16), dp(16), dp(24));
+        scroll.addView(box);
+
+        List<CaptureRecord> records = store.loadRecords();
+
+        // 操作栏
+        LinearLayout actionBar = hBox();
+        actionBar.setGravity(Gravity.CENTER_VERTICAL);
+        actionBar.addView(tv("📋 到店记录（" + records.size() + "）", C_TEXT, 15, Typeface.BOLD));
+        View flex = new View(this);
+        flex.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        actionBar.addView(flex);
+
+        if (!records.isEmpty()) {
+            Button clearBtn = btn("清空全部", Color.parseColor("#FEE2E2"), C_DANGER);
+            clearBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            clearBtn.setPadding(dp(12), dp(6), dp(12), dp(6));
+            clearBtn.setOnClickListener(v -> {
+                new AlertDialog.Builder(this)
+                        .setTitle("清空确认")
+                        .setMessage("确定要清空所有到店记录吗？此操作不可撤销。")
+                        .setPositiveButton("清空", (d, w) -> {
+                            store.clearRecords();
+                            // 删除图片文件
+                            File dir = new File(getFilesDir(), "captures");
+                            if (dir.exists()) {
+                                File[] files = dir.listFiles();
+                                if (files != null) for (File f : files) f.delete();
+                            }
+                            Toast.makeText(this, "已清空", Toast.LENGTH_SHORT).show();
+                            showRecords();
+                        })
+                        .setNegativeButton("取消", null)
+                        .show();
+            });
+            actionBar.addView(clearBtn);
+        }
+        box.addView(actionBar, lp(-1, -2, 0, 0, 0, dp(12)));
+
+        if (records.isEmpty()) {
+            LinearLayout emptyCard = card();
+            emptyCard.setPadding(dp(20), dp(48), dp(20), dp(48));
+            TextView empty = tv("📸 暂无到店记录\n\n启动监控后，检测到VIP客户将自动识别", C_TEXT_HINT, 14, Typeface.NORMAL);
+            empty.setGravity(Gravity.CENTER);
+            emptyCard.addView(empty);
+            box.addView(emptyCard, lp(-1, -2, 0, dp(8), 0, 0));
+        } else {
+            for (CaptureRecord record : records) {
+                box.addView(recordCard(record), lp(-1, -2, 0, dp(6), 0, 0));
+            }
+        }
+
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+        updateTopStatus();
+    }
+
+    private LinearLayout recordCard(CaptureRecord record) {
+        LinearLayout card = card();
+        card.setPadding(dp(12), dp(12), dp(12), dp(12));
+
+        LinearLayout row = hBox();
+
+        // 图片缩略图
+        if (!TextUtils.isEmpty(record.imagePath)) {
+            File imgFile = new File(record.imagePath);
+            if (imgFile.exists()) {
+                Bitmap bitmap = BitmapFactory.decodeFile(record.imagePath);
+                if (bitmap != null) {
+                    ImageView imageView = new ImageView(this);
+                    int targetW = dp(100), targetH = dp(130);
+                    float scale = Math.min((float) targetW / bitmap.getWidth(), (float) targetH / bitmap.getHeight());
+                    int w = Math.round(bitmap.getWidth() * scale);
+                    int h = Math.round(bitmap.getHeight() * scale);
+                    GradientDrawable imgBg = new GradientDrawable();
+                    imgBg.setCornerRadius(dp(8));
+                    imgBg.setColor(C_BG);
+                    imageView.setBackground(imgBg);
+                    imageView.setClipToOutline(true);
+                    imageView.setImageBitmap(Bitmap.createScaledBitmap(bitmap, w, h, true));
+                    row.addView(imageView, lp(w, h, 0, 0, dp(10), 0));
+                }
+            }
+        }
+
+        // 信息区
+        LinearLayout info = vBox();
+        info.setPadding(dp(4), 0, dp(4), 0);
+
+        TextView nameTv = tv(record.targetName, C_TEXT, 16, Typeface.BOLD);
+        info.addView(nameTv);
+        info.addView(spacer(dp(4)));
+
+        String time = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA).format(new Date(record.capturedAt));
+        TextView timeTv = tv("🕒 " + time, C_TEXT_2, 12, Typeface.NORMAL);
+        info.addView(timeTv);
+        info.addView(spacer(dp(6)));
+
+        // 标签行
+        LinearLayout tagRow = hBox();
+        tagRow.setGravity(Gravity.CENTER_VERTICAL);
+        int scoreColor = record.score >= 0.85 ? C_SUCCESS : (record.score >= 0.72 ? C_WARNING : C_DANGER);
+        tagRow.addView(tag(Math.round(record.score * 100) + "%", lighten(scoreColor), scoreColor));
+        View gap = new View(this);
+        gap.setLayoutParams(new LinearLayout.LayoutParams(dp(6), 0));
+        tagRow.addView(gap);
+        tagRow.addView(tag(record.mode, Color.parseColor("#E0E7FF"), Color.parseColor("#4338CA")));
+        info.addView(tagRow);
+
+        View flex = new View(this);
+        flex.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        info.addView(flex);
+
+        row.addView(info, new LinearLayout.LayoutParams(0, -2, 1));
+
+        card.addView(row);
+        card.setOnClickListener(v -> showFullImage(record));
+
+        // 长按删除
+        card.setOnLongClickListener(v -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("删除记录")
+                    .setMessage("确定删除这条到店记录吗？")
+                    .setPositiveButton("删除", (d, w) -> {
+                        store.deleteRecord(record.id);
+                        if (!TextUtils.isEmpty(record.imagePath)) {
+                            new File(record.imagePath).delete();
+                        }
+                        Toast.makeText(this, "已删除", Toast.LENGTH_SHORT).show();
+                        showRecords();
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+            return true;
+        });
+
+        return card;
+    }
+
+    private void showFullImage(CaptureRecord record) {
+        if (TextUtils.isEmpty(record.imagePath) || !new File(record.imagePath).exists()) {
+            Toast.makeText(this, "此记录无图片", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        LinearLayout dialogContent = vBox();
+        dialogContent.setGravity(Gravity.CENTER);
+        dialogContent.setPadding(dp(8), dp(8), dp(8), dp(8));
+
+        Bitmap bitmap = BitmapFactory.decodeFile(record.imagePath);
+        if (bitmap != null) {
+            ImageView imageView = new ImageView(this);
+            int maxW = dp(320), maxH = dp(480);
+            float scale = Math.min((float) maxW / bitmap.getWidth(), (float) maxH / bitmap.getHeight());
+            int w = Math.round(bitmap.getWidth() * scale);
+            int h = Math.round(bitmap.getHeight() * scale);
+            imageView.setImageBitmap(Bitmap.createScaledBitmap(bitmap, w, h, true));
+            dialogContent.addView(imageView);
+        }
+
+        TextView info = tv(record.targetName + " · " + Math.round(record.score * 100) + "% · "
+                + new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(new Date(record.capturedAt)),
+                C_TEXT_2, 13, Typeface.NORMAL);
+        info.setGravity(Gravity.CENTER);
+        info.setPadding(0, dp(8), 0, 0);
+        dialogContent.addView(info);
+
+        new AlertDialog.Builder(this)
+                .setView(dialogContent)
+                .setPositiveButton("关闭", null)
+                .show();
+    }
+
+    // ==================== 页面4: 统计分析 ====================
+
+    private void showStats() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(C_BG);
+        LinearLayout box = vBox();
+        box.setPadding(dp(16), dp(16), dp(16), dp(24));
+        scroll.addView(box);
+
+        List<CaptureRecord> records = store.loadRecords();
+        List<PersonTarget> targets = store.loadTargets();
+
+        // 今日数据卡片
+        Calendar today = Calendar.getInstance();
+        today.set(Calendar.HOUR_OF_DAY, 0);
+        today.set(Calendar.MINUTE, 0);
+        today.set(Calendar.SECOND, 0);
+        today.set(Calendar.MILLISECOND, 0);
+        long todayStart = today.getTimeInMillis();
+
+        int todayCount = 0;
+        for (CaptureRecord r : records) {
+            if (r.capturedAt >= todayStart) todayCount++;
+        }
+
+        // 数据概览
+        box.addView(sectionTitle("📊 数据概览"));
+        LinearLayout statsRow = hBox();
+        statsRow.addView(statCard("今日识别", String.valueOf(todayCount), C_PRIMARY));
+        statsRow.addView(spacer(dp(10)));
+        statsRow.addView(statCard("总识别", String.valueOf(records.size()), C_SUCCESS));
+        statsRow.addView(spacer(dp(10)));
+        statsRow.addView(statCard("VIP客户", String.valueOf(targets.size()), C_WARNING));
+        box.addView(statsRow, lp(-1, -2, 0, dp(8), 0, dp(20)));
+
+        // 目标分布
+        box.addView(sectionTitle("👥 目标识别分布"));
+        if (records.isEmpty()) {
+            box.addView(emptyCard("暂无数据"), lp(-1, -2, 0, dp(8), 0, dp(20)));
+        } else {
+            Map<String, Integer> targetCount = new HashMap<>();
+            for (CaptureRecord r : records) {
+                String name = r.targetName;
+                targetCount.put(name, targetCount.getOrDefault(name, 0) + 1);
+            }
+            List<Map.Entry<String, Integer>> sorted = new ArrayList<>(targetCount.entrySet());
+            sorted.sort((a, b) -> b.getValue() - a.getValue());
+
+            int maxCount = sorted.get(0).getValue();
+            for (Map.Entry<String, Integer> entry : sorted) {
+                LinearLayout barRow = hBox();
+                barRow.setGravity(Gravity.CENTER_VERTICAL);
+                barCard(barRow, dp(16), dp(10), dp(16), dp(10));
+
+                TextView nameTv = tv(entry.getKey(), C_TEXT, 13, Typeface.NORMAL);
+                nameTv.setMaxWidth(dp(100));
+                barRow.addView(nameTv);
+
+                // 进度条
+                View barBg = new View(this);
+                barBg.setBackgroundColor(C_BG);
+                GradientDrawable barBgDrawable = new GradientDrawable();
+                barBgDrawable.setCornerRadius(dp(4));
+                barBgDrawable.setColor(Color.parseColor("#E2E8F0"));
+                barBg.setBackground(barBgDrawable);
+                LinearLayout.LayoutParams barBgParams = new LinearLayout.LayoutParams(0, dp(20), 1);
+                barBgParams.leftMargin = dp(10);
+                barRow.addView(barBg, barBgParams);
+
+                // 填充
+                float ratio = maxCount > 0 ? (float) entry.getValue() / maxCount : 0;
+                View barFill = new View(this);
+                GradientDrawable fillDrawable = new GradientDrawable();
+                fillDrawable.setCornerRadius(dp(4));
+                fillDrawable.setColor(C_PRIMARY);
+                barFill.setBackground(fillDrawable);
+                FrameLayout barContainer = new FrameLayout(this);
+                barContainer.addView(barFill, new FrameLayout.LayoutParams(
+                        Math.max(dp(4), (int) (dp(200) * ratio)), dp(20)));
+
+                // 替换 barBg 为 container
+                barRow.removeView(barBg);
+                barContainer.setLayoutParams(new LinearLayout.LayoutParams(0, dp(20), 1));
+                ((LinearLayout.LayoutParams) barContainer.getLayoutParams()).leftMargin = dp(10);
+                barRow.addView(barContainer);
+
+                TextView countTv = tv(String.valueOf(entry.getValue()), C_TEXT_2, 13, Typeface.BOLD);
+                LinearLayout.LayoutParams countParams = new LinearLayout.LayoutParams(-2, -2);
+                countParams.leftMargin = dp(8);
+                barRow.addView(countTv, countParams);
+
+                box.addView(barRow, lp(-1, -2, 0, dp(4), 0, 0));
+            }
+            box.addView(spacer(dp(20)));
+        }
+
+        // 最近活动
+        box.addView(sectionTitle("🕐 最近活动"));
+        if (records.isEmpty()) {
+            box.addView(emptyCard("暂无到店记录"), lp(-1, -2, 0, dp(8), 0, 0));
+        } else {
+            int showCount = Math.min(10, records.size());
+            for (int i = 0; i < showCount; i++) {
+                CaptureRecord r = records.get(i);
+                LinearLayout row = hBox();
+                row.setGravity(Gravity.CENTER_VERTICAL);
+                barCard(row, dp(14), dp(10), dp(14), dp(10));
+
+                TextView dot = tv("●", r.score >= 0.85 ? C_SUCCESS : (r.score >= 0.72 ? C_WARNING : C_DANGER), 12, Typeface.NORMAL);
+                row.addView(dot);
+
+                TextView desc = tv(r.targetName + " · " + Math.round(r.score * 100) + "%",
+                        C_TEXT, 13, Typeface.NORMAL);
+                LinearLayout.LayoutParams descParams = new LinearLayout.LayoutParams(0, -2, 1);
+                descParams.leftMargin = dp(8);
+                row.addView(desc, descParams);
+
+                TextView time = tv(new SimpleDateFormat("MM-dd HH:mm", Locale.CHINA).format(new Date(r.capturedAt)),
+                        C_TEXT_HINT, 12, Typeface.NORMAL);
+                row.addView(time);
+
+                box.addView(row, lp(-1, -2, 0, dp(4), 0, 0));
+            }
+        }
+
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+        updateTopStatus();
+    }
+
+    // ==================== 页面5: 设置 ====================
+
+    private void showSettings() {
+        ScrollView scroll = new ScrollView(this);
+        scroll.setBackgroundColor(C_BG);
+        LinearLayout box = vBox();
+        box.setPadding(dp(16), dp(16), dp(16), dp(24));
+        scroll.addView(box);
+
+        // 监控设置
+        box.addView(sectionTitle("🎯 监控设置"));
+
+        // 去重间隔
+        LinearLayout dedupCard = card();
+        dedupCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout dedupRow = hBox();
+        dedupRow.setGravity(Gravity.CENTER_VERTICAL);
+        dedupRow.addView(tv("去重间隔", C_TEXT, 14, Typeface.NORMAL));
+        View flex1 = new View(this);
+        flex1.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        dedupRow.addView(flex1);
+        final TextView dedupValue = tv(config.getDedupInterval() + " 秒", C_PRIMARY, 15, Typeface.BOLD);
+        dedupRow.addView(dedupValue);
+        dedupCard.addView(dedupRow);
+        SeekBar dedupBar = new SeekBar(this);
+        dedupBar.setMax(120);
+        dedupBar.setProgress(config.getDedupInterval() - 5);
+        dedupBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean f) {
+                int val = p + 5;
+                dedupValue.setText(val + " 秒");
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {
+                int val = s.getProgress() + 5;
+                config.setDedupInterval(val);
+                duplicateGuard.setIntervalSeconds(val);
+            }
+        });
+        dedupCard.addView(dedupBar, lp(-1, -2, 0, dp(8), 0, 0));
+        box.addView(dedupCard, lp(-1, -2, 0, dp(8), 0, dp(12)));
+
+        // 最大记录数
+        LinearLayout maxCard = card();
+        maxCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout maxRow = hBox();
+        maxRow.setGravity(Gravity.CENTER_VERTICAL);
+        maxRow.addView(tv("最大记录数", C_TEXT, 14, Typeface.NORMAL));
+        View flex2 = new View(this);
+        flex2.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        maxRow.addView(flex2);
+        final TextView maxvalue = tv(String.valueOf(config.getMaxRecords()), C_PRIMARY, 15, Typeface.BOLD);
+        maxRow.addView(maxvalue);
+        maxCard.addView(maxRow);
+        SeekBar maxBar = new SeekBar(this);
+        maxBar.setMax(970);
+        maxBar.setProgress(config.getMaxRecords() - 30);
+        maxBar.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
+            @Override public void onProgressChanged(SeekBar s, int p, boolean f) {
+                maxvalue.setText(String.valueOf(p + 30));
+            }
+            @Override public void onStartTrackingTouch(SeekBar s) {}
+            @Override public void onStopTrackingTouch(SeekBar s) {
+                config.setMaxRecords(s.getProgress() + 30);
+            }
+        });
+        maxCard.addView(maxBar, lp(-1, -2, 0, dp(8), 0, 0));
+        box.addView(maxCard, lp(-1, -2, 0, dp(0), 0, dp(20)));
+
+        // 通知设置
+        box.addView(sectionTitle("🔔 通知设置"));
+
+        // 震动开关
+        LinearLayout vibCard = card();
+        vibCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout vibRow = hBox();
+        vibRow.setGravity(Gravity.CENTER_VERTICAL);
+        vibRow.addView(tv("识别时震动提醒", C_TEXT, 14, Typeface.NORMAL));
+        View flex3 = new View(this);
+        flex3.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        vibRow.addView(flex3);
+        Switch vibSwitch = new Switch(this);
+        vibSwitch.setChecked(config.isVibrationEnabled());
+        vibSwitch.setOnCheckedChangeListener((b, checked) -> config.setVibrationEnabled(checked));
+        vibRow.addView(vibSwitch);
+        vibCard.addView(vibRow);
+        box.addView(vibCard, lp(-1, -2, 0, dp(8), 0, dp(12)));
+
+        // 通知铃声开关
+        LinearLayout alarmCard = card();
+        alarmCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout alarmRow = hBox();
+        alarmRow.setGravity(Gravity.CENTER_VERTICAL);
+        alarmRow.addView(tv("🔔 识别时通知铃声", C_TEXT, 14, Typeface.NORMAL));
+        View flexAlarm = new View(this);
+        flexAlarm.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        alarmRow.addView(flexAlarm);
+        Switch alarmSwitch = new Switch(this);
+        alarmSwitch.setChecked(config.isAlarmSoundEnabled());
+        alarmSwitch.setOnCheckedChangeListener((b, checked) -> config.setAlarmSoundEnabled(checked));
+        alarmRow.addView(alarmSwitch);
+        alarmCard.addView(alarmRow);
+        box.addView(alarmCard, lp(-1, -2, 0, dp(0), 0, dp(20)));
+        box.addView(sectionTitle("💾 数据管理"));
+
+        // 导出数据
+        LinearLayout exportCard = card();
+        exportCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout exportRow = hBox();
+        exportRow.setGravity(Gravity.CENTER_VERTICAL);
+        exportRow.addView(tv("📤 导出到店记录", C_TEXT, 14, Typeface.NORMAL));
+        View flex4 = new View(this);
+        flex4.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        exportRow.addView(flex4);
+        exportRow.addView(tv("→", C_TEXT_HINT, 16, Typeface.NORMAL));
+        exportCard.addView(exportRow);
+        exportCard.setOnClickListener(v -> exportRecords());
+        box.addView(exportCard, lp(-1, -2, 0, dp(8), 0, dp(8)));
+
+        // 清空底库
+        LinearLayout clearTargetsCard = card();
+        clearTargetsCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        LinearLayout clearTargetsRow = hBox();
+        clearTargetsRow.setGravity(Gravity.CENTER_VERTICAL);
+        clearTargetsRow.addView(tv("🗑️ 清空VIP客户库", C_DANGER, 14, Typeface.NORMAL));
+        View flex5 = new View(this);
+        flex5.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        clearTargetsRow.addView(flex5);
+        clearTargetsRow.addView(tv("→", C_TEXT_HINT, 16, Typeface.NORMAL));
+        clearTargetsCard.addView(clearTargetsRow);
+        clearTargetsCard.setOnClickListener(v -> {
+            new AlertDialog.Builder(this)
+                    .setTitle("清空底库")
+                    .setMessage("确定要清空所有VIP客户吗？此操作不可撤销。")
+                    .setPositiveButton("清空", (d, w) -> {
+                        store.clearTargets();
+                        Toast.makeText(this, "已清空底库", Toast.LENGTH_SHORT).show();
+                        showSettings();
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        });
+        box.addView(clearTargetsCard, lp(-1, -2, 0, dp(0), 0, dp(20)));
+
+        // 关于
+        box.addView(sectionTitle("ℹ️ 关于"));
+
+        // 授权状态卡片
+        LinearLayout licenseCard = card();
+        licenseCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+
+        LinearLayout licenseRow = hBox();
+        licenseRow.setGravity(Gravity.CENTER_VERTICAL);
+        String licenseIcon = license.isActivated() ? "✅" : (license.isTrialExpired() ? "🔒" : "⏳");
+        licenseRow.addView(tv(licenseIcon, C_TEXT, 20, Typeface.NORMAL));
+        View licIconGap = new View(this);
+        licIconGap.setLayoutParams(new LinearLayout.LayoutParams(dp(10), 0));
+        licenseRow.addView(licIconGap);
+        LinearLayout licenseInfo = vBox();
+        licenseInfo.setLayoutParams(new LinearLayout.LayoutParams(-2, -2));
+        licenseInfo.setPadding(dp(10), 0, 0, 0);
+        licenseInfo.addView(tv("授权状态", C_TEXT, 14, Typeface.BOLD));
+        licenseInfo.addView(spacer(dp(2)));
+        licenseInfo.addView(tv(license.getStatusText(), C_TEXT_2, 12, Typeface.NORMAL));
+        licenseRow.addView(licenseInfo);
+        View licFlex = new View(this);
+        licFlex.setLayoutParams(new LinearLayout.LayoutParams(0, 1, 1));
+        licenseRow.addView(licFlex);
+
+        if (!license.isActivated()) {
+            Button activateBtnInSettings = new Button(this);
+            activateBtnInSettings.setText(license.isTrialExpired() ? "激活" : "提前激活");
+            activateBtnInSettings.setAllCaps(false);
+            activateBtnInSettings.setTextColor(Color.WHITE);
+            activateBtnInSettings.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            activateBtnInSettings.setPadding(dp(16), dp(8), dp(16), dp(8));
+            GradientDrawable actBtnBg = new GradientDrawable();
+            actBtnBg.setCornerRadius(dp(8));
+            actBtnBg.setColor(C_PRIMARY);
+            activateBtnInSettings.setBackground(actBtnBg);
+            activateBtnInSettings.setOnClickListener(v -> showActivationDialog());
+            licenseRow.addView(activateBtnInSettings);
+        }
+
+        licenseCard.addView(licenseRow);
+
+        if (license.isActivated()) {
+            licenseCard.addView(spacer(dp(8)));
+            String codeDisplay = license.getActivationCode();
+            licenseCard.addView(tv("激活码: " + codeDisplay, C_TEXT_HINT, 11, Typeface.NORMAL));
+        }
+
+        box.addView(licenseCard, lp(-1, -2, 0, dp(8), 0, dp(12)));
+
+        // 版本信息
+        LinearLayout aboutCard = card();
+        aboutCard.setPadding(dp(16), dp(16), dp(16), dp(16));
+        aboutCard.addView(tv("智能迎宾", C_TEXT, 16, Typeface.BOLD));
+        aboutCard.addView(spacer(dp(4)));
+        aboutCard.addView(tv("版本：" + getAppVersion(), C_TEXT_2, 13, Typeface.NORMAL));
+        aboutCard.addView(spacer(dp(4)));
+        aboutCard.addView(tv("基于 CameraX 的离线单点值守识别应用\n支持VIP客户底库管理、实时匹配、到店记录与统计分析\n\n所有数据仅保存在本机，请在合法合规场景下使用。",
+                C_TEXT_2, 13, Typeface.NORMAL));
+        box.addView(aboutCard, lp(-1, -2, 0, dp(8), 0, 0));
+
+        content.addView(scroll, new LinearLayout.LayoutParams(-1, -1));
+        updateTopStatus();
+    }
+
+    private void exportRecords() {
+        List<CaptureRecord> records = store.loadRecords();
+        if (records.isEmpty()) {
+            Toast.makeText(this, "暂无记录可导出", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("时间,目标,匹配分,模式,图片路径\n");
+        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.CHINA);
+        for (CaptureRecord r : records) {
+            sb.append(sdf.format(new Date(r.capturedAt))).append(",")
+              .append(r.targetName).append(",")
+              .append(Math.round(r.score * 100)).append("%,")
+              .append(r.mode).append(",")
+              .append(r.imagePath).append("\n");
+        }
+        File exportDir = new File(getExternalFilesDir(null), "exports");
+        if (!exportDir.exists()) exportDir.mkdirs();
+        File exportFile = new File(exportDir, "records_" + new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.CHINA).format(new Date()) + ".csv");
+        try {
+            java.io.FileWriter fw = new java.io.FileWriter(exportFile);
+            fw.write(sb.toString());
+            fw.close();
+            Toast.makeText(this, "✅ 已导出到 " + exportFile.getAbsolutePath(), Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "导出失败: " + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    private void pickLocalPhoto() {
+        Intent intent = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        intent.addCategory(Intent.CATEGORY_OPENABLE);
+        intent.setType("image/*");
+        intent.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION | Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION);
+        startActivityForResult(intent, REQ_PHOTO);
+    }
+
+    /**
+     * 显示照片特征提取与算法验证面板
+     * 上传照片后立即展示：128维特征详情 + 六维度评分 + 验证结论
+     */
+    private void showFeatureExtractionPanel(Uri photoUri) {
+        Bitmap photo = loadBitmapFromUri(photoUri);
+        if (photo == null) {
+            Toast.makeText(this, "照片读取失败，请重新选择", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        // 提取特征
+        FeatureVector fv = FeatureExtractor.extractFromBitmap(photo, null);
+        float quality = fv.qualityScore();
+        float colorDist = fv.colorDistinctiveness();
+        float textureDist = fv.textureDistinctiveness();
+
+        // 自检：与自己比较（理想情况应接近 1.0）
+        float selfScore = fv.weightedCosineSimilarity(fv);
+
+        // 各维度自检
+        float colorSelf = fv.colorSimilarity(fv);
+        float textureSelf = fv.textureSimilarity(fv);
+        float edgeSelf = fv.silhouetteSimilarity(fv);
+        float bodySelf = fv.bodySimilarity(fv);
+
+        // 检测人脸和人体区域
+        android.graphics.Rect personRect = FeatureExtractor.getLastPersonRect();
+        android.graphics.Rect faceRect = FeatureExtractor.getLastFaceRect();
+
+        // 构建验证面板
+        ScrollView scroll = new ScrollView(this);
+        LinearLayout panel = vBox();
+        panel.setPadding(dp(16), dp(16), dp(16), dp(24));
+        scroll.addView(panel);
+
+        // 标题
+        panel.addView(sectionTitle("🔍 特征提取与算法验证"));
+
+        // 1. 照片预览
+        LinearLayout photoCard = card();
+        photoCard.setPadding(dp(12), dp(12), dp(12), dp(12));
+        LinearLayout photoRow = hBox();
+        photoRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        // 缩略图
+        int thumbW = dp(100), thumbH = dp(140);
+        float scale = Math.min((float) thumbW / photo.getWidth(), (float) thumbH / photo.getHeight());
+        int w = Math.round(photo.getWidth() * scale);
+        int h = Math.round(photo.getHeight() * scale);
+        ImageView thumbView = new ImageView(this);
+        GradientDrawable thumbBg = new GradientDrawable();
+        thumbBg.setCornerRadius(dp(8));
+        thumbBg.setColor(C_BG);
+        thumbView.setBackground(thumbBg);
+        thumbView.setClipToOutline(true);
+        thumbView.setImageBitmap(Bitmap.createScaledBitmap(photo, w, h, true));
+        photoRow.addView(thumbView, lp(w, h, 0, 0, dp(12), 0));
+
+        LinearLayout photoInfo = vBox();
+        photoInfo.addView(tv("原始尺寸: " + photo.getWidth() + "×" + photo.getHeight(), C_TEXT_2, 12, Typeface.NORMAL));
+        photoInfo.addView(spacer(dp(4)));
+        photoInfo.addView(tv("检测区域: " + (personRect != null ? personRect.width() + "×" + personRect.height() : "默认全图"), C_TEXT_2, 12, Typeface.NORMAL));
+        photoInfo.addView(spacer(dp(4)));
+        String faceInfo = faceRect != null
+            ? "人脸检测: ✅ " + faceRect.width() + "×" + faceRect.height() + "px"
+            : "人脸检测: ❌ 未检测到";
+        int faceColor = faceRect != null ? C_SUCCESS : C_WARNING;
+        TextView faceTv = tv(faceInfo, faceColor, 12, Typeface.NORMAL);
+        photoInfo.addView(faceTv);
+        photoRow.addView(photoInfo, new LinearLayout.LayoutParams(0, -2, 1));
+        photoCard.addView(photoRow);
+        panel.addView(photoCard, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        // 2. 特征质量评分
+        LinearLayout qualityCard = card();
+        qualityCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        qualityCard.addView(tv("📊 特征质量评估", C_TEXT, 15, Typeface.BOLD));
+        qualityCard.addView(spacer(dp(8)));
+
+        qualityCard.addView(qualityBar("整体质量", quality, 0.35f, 0.70f));
+        qualityCard.addView(spacer(dp(4)));
+        qualityCard.addView(qualityBar("颜色区分度", colorDist, 0.20f, 0.50f));
+        qualityCard.addView(spacer(dp(4)));
+        qualityCard.addView(qualityBar("纹理区分度", textureDist, 0.15f, 0.40f));
+        panel.addView(qualityCard, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        // 3. 六维度自检评分
+        LinearLayout dimCard = card();
+        dimCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        dimCard.addView(tv("📐 六维度自检评分", C_TEXT, 15, Typeface.BOLD));
+        dimCard.addView(spacer(dp(8)));
+
+        String[] dimNames = {"颜色直方图", "LBP纹理", "边缘方向", "体态比例", "姿态关键点", "综合融合"};
+        float[] dimScores = {colorSelf, textureSelf, edgeSelf, bodySelf, fv.weightedCosineSimilarity(fv), selfScore};
+        float[] dimWeights = {0.30f, 0.20f, 0.10f, 0.15f, 0.10f, 1.0f};
+
+        for (int i = 0; i < dimNames.length; i++) {
+            LinearLayout dimRow = hBox();
+            dimRow.setGravity(Gravity.CENTER_VERTICAL);
+            dimRow.addView(tv(dimNames[i], C_TEXT_2, 13, Typeface.NORMAL), new LinearLayout.LayoutParams(0, -2, 1));
+            String weightStr = i < 5 ? "权重" + Math.round(dimWeights[i] * 100) + "%" : "";
+            dimRow.addView(tv(weightStr, C_TEXT_HINT, 11, Typeface.NORMAL));
+            View gap2 = new View(this);
+            gap2.setLayoutParams(new LinearLayout.LayoutParams(dp(8), 0));
+            dimRow.addView(gap2);
+            int scoreColor = dimScores[i] >= 0.85 ? C_SUCCESS : (dimScores[i] >= 0.60 ? C_WARNING : C_DANGER);
+            dimRow.addView(tv(Math.round(dimScores[i] * 100) + "%", scoreColor, 14, Typeface.BOLD));
+            dimCard.addView(dimRow);
+            if (i < dimNames.length - 1) dimCard.addView(spacer(dp(4)));
+        }
+        panel.addView(dimCard, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        // 4. 128维特征向量摘要
+        LinearLayout vecCard = card();
+        vecCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        vecCard.addView(tv("🧬 128维特征向量摘要", C_TEXT, 15, Typeface.BOLD));
+        vecCard.addView(spacer(dp(8)));
+
+        // 颜色直方图 (48 dims)
+        float[] colorHist = fv.getColorHistogram();
+        vecCard.addView(featureSummaryRow("颜色直方图 (48维)", colorHist, "HSV三区域"));
+        vecCard.addView(spacer(dp(4)));
+        // LBP纹理 (16 dims)
+        float[] textureHist = fv.getTextureHistogram();
+        vecCard.addView(featureSummaryRow("LBP纹理 (16维)", textureHist, "衣着纹理"));
+        vecCard.addView(spacer(dp(4)));
+        // 边缘方向 (9 dims)
+        float[] eoh = fv.getEdgeOrientation();
+        vecCard.addView(featureSummaryRow("边缘方向 (9维)", eoh, "Sobel梯度"));
+        vecCard.addView(spacer(dp(4)));
+        // 人体比例 (8 dims)
+        float[] body = fv.getBodyRatios();
+        vecCard.addView(featureSummaryRow("人体比例 (8维)", body, "肩宽/腰臀/身高"));
+        vecCard.addView(spacer(dp(4)));
+        // 姿态关键点 (12 dims)
+        float[] pose = fv.getPoseKeypoints();
+        vecCard.addView(featureSummaryRow("姿态关键点 (12维)", pose, "鼻/肩/髋/膝"));
+        vecCard.addView(spacer(dp(4)));
+        // 辅助特征 (4 dims)
+        float[] aux = fv.getAuxiliaryFeatures();
+        vecCard.addView(featureSummaryRow("辅助特征 (4维)", aux, "体型/性别/年龄"));
+        panel.addView(vecCard, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        // 5. 可用性结论
+        LinearLayout conclusionCard = card();
+        conclusionCard.setPadding(dp(16), dp(14), dp(16), dp(14));
+        boolean usable = fv.isUsable();
+        boolean qualityOk = quality >= 0.50f;
+        boolean colorOk = colorDist >= 0.20f;
+
+        int conclusionColor = (usable && qualityOk) ? C_SUCCESS : (usable ? C_WARNING : C_DANGER);
+        String conclusionIcon = (usable && qualityOk) ? "✅" : (usable ? "⚠️" : "❌");
+        String conclusionText;
+        if (usable && qualityOk && colorOk) {
+            conclusionText = "照片特征提取成功，质量良好\n该照片适合作为VIP客户底库照片\n保存后将在值守时用于特征匹配";
+        } else if (usable && qualityOk && !colorOk) {
+            conclusionText = "照片特征可用，但颜色区分度偏低\n建议使用色彩更鲜明的照片\n（如衣着颜色清晰可见的正面照）";
+        } else if (usable) {
+            conclusionText = "照片特征勉强可用，但质量偏低\n建议使用更清晰、光线充足的照片\n（全身照、正面、无遮挡）";
+        } else {
+            conclusionText = "照片特征质量不足，无法有效匹配\n请重新选择：\n• 清晰的正面全身照\n• 光线充足、无逆光\n• 衣着颜色清晰可见";
+        }
+        conclusionCard.addView(tv(conclusionIcon + " 验证结论", conclusionColor, 15, Typeface.BOLD));
+        conclusionCard.addView(spacer(dp(6)));
+        conclusionCard.addView(tv(conclusionText, C_TEXT_2, 13, Typeface.NORMAL));
+        panel.addView(conclusionCard, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        // 6. 操作按钮
+        LinearLayout btnRow = hBox();
+        btnRow.setGravity(Gravity.CENTER_VERTICAL);
+
+        final android.app.Dialog dialog = new android.app.Dialog(this);
+
+        if (usable) {
+            Button useBtn = btn("使用此照片", C_PRIMARY, Color.WHITE);
+            useBtn.setOnClickListener(v -> {
+                dialog.dismiss();
+                // 保持 selectedPhotoUri 不变，允许用户填写信息后保存
+                if (selectedPhotoLabel != null) {
+                    selectedPhotoLabel.setText("✅ 照片已验证，质量" + Math.round(quality * 100) + "%，可保存到底库");
+                    selectedPhotoLabel.setTextColor(C_SUCCESS);
+                }
+            });
+            btnRow.addView(useBtn, new LinearLayout.LayoutParams(0, -2, 1));
+        }
+
+        Button reselectBtn = btn("重新选择", C_BG, C_TEXT);
+        reselectBtn.setOnClickListener(v -> {
+            dialog.dismiss();
+            selectedPhotoUri = null;
+            pickLocalPhoto();
+        });
+        btnRow.addView(reselectBtn, new LinearLayout.LayoutParams(0, -2, 1));
+
+        if (usable) {
+            View gap3 = new View(this);
+            gap3.setLayoutParams(new LinearLayout.LayoutParams(dp(8), 0));
+            btnRow.addView(gap3);
+        }
+
+        panel.addView(btnRow, lp(-1, -2, 0, dp(8), 0, 0));
+
+        photo.recycle();
+
+        dialog.setContentView(scroll);
+        dialog.getWindow().setLayout(LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.MATCH_PARENT);
+        dialog.setTitle(null);
+        dialog.show();
+    }
+
+    /**
+     * 质量评分进度条
+     */
+    private LinearLayout qualityBar(String label, float value, float warnThreshold, float okThreshold) {
+        LinearLayout row = vBox();
+        LinearLayout labelRow = hBox();
+        labelRow.setGravity(Gravity.CENTER_VERTICAL);
+        labelRow.addView(tv(label, C_TEXT_2, 13, Typeface.NORMAL), new LinearLayout.LayoutParams(0, -2, 1));
+        int valColor = value >= okThreshold ? C_SUCCESS : (value >= warnThreshold ? C_WARNING : C_DANGER);
+        labelRow.addView(tv(Math.round(value * 100) + "%", valColor, 13, Typeface.BOLD));
+        row.addView(labelRow);
+        row.addView(spacer(dp(4)));
+
+        // 进度条
+        android.widget.ProgressBar pb = new android.widget.ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
+        pb.setMax(100);
+        pb.setProgress(Math.round(value * 100));
+        pb.getProgressDrawable().setColorFilter(valColor, android.graphics.PorterDuff.Mode.SRC_IN);
+        row.addView(pb, lp(-1, dp(6), 0, 0, 0, 0));
+        return row;
+    }
+
+    /**
+     * 特征向量摘要行
+     */
+    private LinearLayout featureSummaryRow(String title, float[] data, String desc) {
+        LinearLayout row = vBox();
+        LinearLayout header = hBox();
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(tv(title, C_TEXT, 13, Typeface.NORMAL), new LinearLayout.LayoutParams(0, -2, 1));
+        header.addView(tv(desc, C_TEXT_HINT, 11, Typeface.NORMAL));
+        row.addView(header);
+        row.addView(spacer(dp(2)));
+
+        // 统计信息
+        float min = Float.MAX_VALUE, max = Float.MIN_VALUE, sum = 0, energy = 0;
+        for (float v : data) {
+            min = Math.min(min, v);
+            max = Math.max(max, v);
+            sum += v;
+            energy += v * v;
+        }
+        float mean = sum / data.length;
+        float std = 0;
+        for (float v : data) std += (v - mean) * (v - mean);
+        std = (float) Math.sqrt(std / data.length);
+
+        // 简易直方图可视化 (取前16个值)
+        LinearLayout histRow = hBox();
+        histRow.setMinimumHeight(dp(40));
+        int displayCount = Math.min(data.length, 16);
+        float maxAbs = 0;
+        for (int i = 0; i < displayCount; i++) maxAbs = Math.max(maxAbs, Math.abs(data[i]));
+        if (maxAbs == 0) maxAbs = 1;
+        for (int i = 0; i < displayCount; i++) {
+            View bar = new View(this);
+            float ratio = Math.abs(data[i]) / maxAbs;
+            int barH = Math.max(dp(3), (int) (dp(30) * ratio));
+            int barColor = data[i] >= 0 ? Color.parseColor("#D97706") : Color.parseColor("#EF4444");
+            GradientDrawable barBg = new GradientDrawable();
+            barBg.setColor(barColor);
+            barBg.setCornerRadius(dp(1));
+            bar.setBackground(barBg);
+            histRow.addView(bar, lp(dp(6), barH, 0, dp(1), 0, 0));
+        }
+        row.addView(histRow);
+        row.addView(spacer(dp(2)));
+
+        row.addView(tv(String.format("min=%.3f max=%.3f mean=%.3f std=%.3f", min, max, mean, std),
+                       C_TEXT_HINT, 10, Typeface.NORMAL));
+        return row;
+    }
+
+    private Bitmap loadBitmapFromUri(Uri uri) {
+        if (uri == null) return null;
+        try {
+            java.io.InputStream inputStream = getContentResolver().openInputStream(uri);
+            if (inputStream == null) return null;
+            Bitmap bitmap = BitmapFactory.decodeStream(inputStream);
+            inputStream.close();
+            return bitmap;
+        } catch (Exception e) {
+            return null;
+        }
+    }
+
+    private void registerStoredTargetsWithPhotos() {
+        List<PersonTarget> targets = store.loadTargets();
+        for (PersonTarget target : targets) {
+            if (!TextUtils.isEmpty(target.photoUri) && !target.photoUri.startsWith("http")) {
+                Bitmap photo = loadBitmapFromUri(Uri.parse(target.photoUri));
+                if (photo != null) {
+                    matcher.registerTargetWithPhoto(target, photo);
+                    photo.recycle();
+                } else {
+                    matcher.registerTarget(target);
+                }
+            } else {
+                matcher.registerTarget(target);
+            }
+        }
+    }
+
+    private void verifyTargetPhoto(PersonTarget target) {
+        if (target == null || TextUtils.isEmpty(target.photoUri)) {
+            Toast.makeText(this, "该目标没有本地照片，无法验证", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (target.photoUri.startsWith("http")) {
+            Toast.makeText(this, "网络照片已禁用，请重新上传本地照片", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        Bitmap photo = loadBitmapFromUri(Uri.parse(target.photoUri));
+        if (photo == null) {
+            Toast.makeText(this, "照片读取失败，请重新上传", Toast.LENGTH_LONG).show();
+            return;
+        }
+
+        matcher.registerTargetWithPhoto(target, photo);
+        OfflineMatcher.VerificationResult result = matcher.verifyTargetWithPhoto(target, photo);
+        photo.recycle();
+
+        String detail = "目标：" + target.name
+                + "\n自检分：" + Math.round(result.score * 100) + "%"
+                + "\n第二名：" + Math.round(result.secondBestScore * 100) + "%"
+                + "\n分差：" + Math.round(result.margin * 100) + "%"
+                + "\n质量：" + Math.round(result.quality * 100) + "%"
+                + "\n结论：" + (result.passed ? "照片特征可用" : "照片特征不可靠，需要更清晰/更完整的行人照片");
+
+        new AlertDialog.Builder(this)
+                .setTitle(result.passed ? "验证通过" : "验证未通过")
+                .setMessage(detail)
+                .setPositiveButton("知道了", null)
+                .show();
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode == REQ_PHOTO && resultCode == RESULT_OK && data != null && data.getData() != null) {
+            selectedPhotoUri = data.getData();
+            try {
+                getContentResolver().takePersistableUriPermission(
+                        selectedPhotoUri,
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION
+                );
+            } catch (Exception ignored) {
+            }
+            // 上传后立即显示特征提取与算法验证面板
+            showFeatureExtractionPanel(selectedPhotoUri);
+        }
+    }
+
+    // ==================== UI 工具方法 ====================
+
+    private LinearLayout vBox() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.VERTICAL);
+        return l;
+    }
+
+    private LinearLayout hBox() {
+        LinearLayout l = new LinearLayout(this);
+        l.setOrientation(LinearLayout.HORIZONTAL);
+        return l;
+    }
+
+    private LinearLayout card() {
+        LinearLayout c = new LinearLayout(this);
+        c.setOrientation(LinearLayout.VERTICAL);
+        c.setBackgroundColor(C_CARD);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(12));
+        bg.setColor(C_CARD);
+        c.setBackground(bg);
+        c.setElevation(dp(2));
+        return c;
+    }
+
+    private void barCard(LinearLayout row, int pL, int pT, int pR, int pB) {
+        row.setBackgroundColor(C_CARD);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(10));
+        bg.setColor(C_CARD);
+        row.setBackground(bg);
+        row.setElevation(dp(1));
+        row.setPadding(pL, pT, pR, pB);
+    }
+
+    private Button btn(String text, int bgColor, int textColor) {
+        Button b = new Button(this);
+        b.setText(text);
+        b.setAllCaps(false);
+        b.setTextColor(textColor);
+        b.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        b.setPadding(dp(16), dp(10), dp(16), dp(10));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(8));
+        bg.setColor(bgColor);
+        b.setBackground(bg);
+        b.setLayoutParams(new LinearLayout.LayoutParams(-1, -2));
+        return b;
+    }
+
+    private TextView tv(String text, int color, float sizeSp, int typeface) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextColor(color);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, sizeSp);
+        t.setTypeface(Typeface.create(Typeface.DEFAULT, typeface));
+        return t;
+    }
+
+    private TextView tag(String text, int bgColor, int textColor) {
+        TextView t = new TextView(this);
+        t.setText(text);
+        t.setTextColor(textColor);
+        t.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        t.setPadding(dp(8), dp(3), dp(8), dp(3));
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(10));
+        bg.setColor(bgColor);
+        t.setBackground(bg);
+        return t;
+    }
+
+    private TextView sectionTitle(String text) {
+        return tv(text, C_TEXT, 15, Typeface.BOLD);
+    }
+
+    private EditText input(String hint) {
+        EditText et = new EditText(this);
+        et.setHint(hint);
+        et.setSingleLine(false);
+        et.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        et.setTextColor(C_TEXT);
+        et.setHintTextColor(C_TEXT_HINT);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(6));
+        bg.setColor(Color.parseColor("#F8FAFC"));
+        bg.setStroke(dp(1), C_DIVIDER);
+        et.setBackground(bg);
+        et.setPadding(dp(10), dp(10), dp(10), dp(10));
+        return et;
+    }
+
+    private View spacer(int height) {
+        View v = new View(this);
+        v.setLayoutParams(new LinearLayout.LayoutParams(-1, height));
+        return v;
+    }
+
+    private LinearLayout.LayoutParams lp(int w, int h, int l, int t, int r, int b) {
+        LinearLayout.LayoutParams p = new LinearLayout.LayoutParams(w, h);
+        p.setMargins(l, t, r, b);
+        return p;
+    }
+
+    private LinearLayout statCard(String label, String value, int color) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER);
+        GradientDrawable bg = new GradientDrawable();
+        bg.setCornerRadius(dp(12));
+        bg.setColor(color);
+        card.setBackground(bg);
+        card.setPadding(dp(16), dp(20), dp(16), dp(20));
+        card.setElevation(dp(2));
+
+        TextView valueTv = tv(value, Color.WHITE, 28, Typeface.BOLD);
+        valueTv.setGravity(Gravity.CENTER);
+        card.addView(valueTv);
+        card.addView(spacer(dp(4)));
+        TextView labelTv = tv(label, Color.parseColor("#E0E7FF"), 12, Typeface.NORMAL);
+        labelTv.setGravity(Gravity.CENTER);
+        card.addView(labelTv);
+
+        card.setLayoutParams(new LinearLayout.LayoutParams(0, -2, 1));
+        return card;
+    }
+
+    private LinearLayout emptyCard(String text) {
+        LinearLayout c = card();
+        c.setPadding(dp(20), dp(32), dp(20), dp(32));
+        TextView t = tv(text, C_TEXT_HINT, 14, Typeface.NORMAL);
+        t.setGravity(Gravity.CENTER);
+        c.addView(t);
+        return c;
+    }
+
+    private int dp(int v) {
+        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
+    }
+
+    private String getAppVersion() {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return pi.versionName != null ? pi.versionName : "unknown";
+        } catch (Exception e) {
+            return "unknown";
+        }
+    }
+
+    private int lighten(int color) {
+        return Color.rgb(
+                Math.min(Color.red(color) + 60, 255),
+                Math.min(Color.green(color) + 60, 255),
+                Math.min(Color.blue(color) + 60, 255)
+        );
+    }
+
+    private String textOr(EditText et, String fallback) {
+        String v = et.getText().toString().trim();
+        return v.isEmpty() ? fallback : v;
+    }
+
+    private boolean hasCameraPermission() {
+        return checkSelfPermission(Manifest.permission.CAMERA) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    // ==================== 权限与回调 ====================
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, @NonNull String[] permissions, @NonNull int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode == REQ_CAMERA && (grantResults.length == 0 || grantResults[0] != PackageManager.PERMISSION_GRANTED)) {
+            new AlertDialog.Builder(this)
+                    .setTitle("需要相机权限")
+                    .setMessage("开启相机权限后才能进行单点值守识别。")
+                    .setPositiveButton("去设置", (d, w) -> {
+                        Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+                        intent.setData(Uri.parse("package:" + getPackageName()));
+                        startActivity(intent);
+                    })
+                    .setNegativeButton("取消", null)
+                    .show();
+        }
+    }
+
+    // ==================== 授权管理 ====================
+
+    private void checkLicense() {
+        // 优先检查 Web3 链上激活
+        if (web3License.isWalletConnected()) {
+            web3License.checkChainActivation().thenAccept(result -> {
+                runOnUiThread(() -> {
+                    if (result.activated) {
+                        licenseBlocked = false;
+                        Toast.makeText(this, "✅ NFT凭证已激活 #" + result.tokenId, Toast.LENGTH_SHORT).show();
+                    } else if (web3License.isTrialExpired()) {
+                        licenseBlocked = true;
+                        showWeb3ActivationDialog();
+                    } else {
+                        licenseBlocked = false;
+                        int remaining = web3License.getRemainingTrialDays();
+                        if (remaining <= 3) {
+                            topStatus.setText("⏳ 试用剩余 " + remaining + " 天 · " + topStatus.getText());
+                        }
+                    }
+                });
+            });
+            return;
+        }
+
+        // 降级到旧版激活码验证
+        if (license.isActivated()) {
+            licenseBlocked = false;
+            return;
+        }
+        if (license.isTrialExpired()) {
+            licenseBlocked = true;
+            if (!license.isTrialExpiredShown()) {
+                license.setTrialExpiredShown(true);
+                showActivationDialog();
+            } else {
+                showActivationDialog();
+            }
+        } else {
+            licenseBlocked = false;
+            int remaining = license.getRemainingTrialDays();
+            if (remaining <= 3) {
+                topStatus.setText("⏳ 试用剩余 " + remaining + " 天 · " + topStatus.getText());
+            }
+        }
+    }
+
+    private void showWeb3ActivationDialog() {
+        // 显示 Web3 激活弹窗
+        LinearLayout dialogContent = vBox();
+        dialogContent.setPadding(dp(20), dp(16), dp(20), dp(16));
+
+        TextView iconTv = tv("🔗", C_PRIMARY, 40, Typeface.NORMAL);
+        iconTv.setGravity(Gravity.CENTER);
+        dialogContent.addView(iconTv);
+        dialogContent.addView(spacer(dp(8)));
+
+        TextView titleTv = tv("链上激活", C_TEXT, 18, Typeface.BOLD);
+        titleTv.setGravity(Gravity.CENTER);
+        dialogContent.addView(titleTv);
+        dialogContent.addView(spacer(dp(6)));
+
+        TextView statusTv = tv("试用期已结束\n请购买 NFT 数字凭证来激活", C_TEXT_2, 13, Typeface.NORMAL);
+        statusTv.setGravity(Gravity.CENTER);
+        statusTv.setLineSpacing(dp(3), 1f);
+        dialogContent.addView(statusTv);
+        dialogContent.addView(spacer(dp(16)));
+
+        // 购买按钮
+        Button buyBtn = new Button(this);
+        buyBtn.setText("购买 NFT 凭证");
+        buyBtn.setTextColor(Color.WHITE);
+        buyBtn.setAllCaps(false);
+        buyBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        buyBtn.setPadding(dp(20), dp(16), dp(20), dp(16));
+        GradientDrawable buyBg = new GradientDrawable();
+        buyBg.setCornerRadius(dp(8));
+        buyBg.setColor(C_PRIMARY);
+        buyBtn.setBackground(buyBg);
+        buyBtn.setOnClickListener(v -> {
+            String url = web3License.getPurchaseURL();
+            android.content.Intent browserIntent = new android.content.Intent(android.content.Intent.ACTION_VIEW, android.net.Uri.parse(url));
+            startActivity(browserIntent);
+        });
+        dialogContent.addView(buyBtn);
+        dialogContent.addView(spacer(dp(8)));
+
+        // 连接钱包按钮
+        Button walletBtn = new Button(this);
+        walletBtn.setText("连接钱包");
+        walletBtn.setTextColor(C_PRIMARY);
+        walletBtn.setAllCaps(false);
+        walletBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        walletBtn.setPadding(dp(20), dp(12), dp(20), dp(12));
+        GradientDrawable walletBg = new GradientDrawable();
+        walletBg.setCornerRadius(dp(8));
+        walletBg.setColor(Color.TRANSPARENT);
+        walletBg.setStroke(1, C_PRIMARY);
+        walletBtn.setBackground(walletBg);
+        walletBtn.setOnClickListener(v -> {
+            android.content.Intent walletIntent = new android.content.Intent(this, WalletActivity.class);
+            startActivity(walletIntent);
+        });
+        dialogContent.addView(walletBtn);
+
+        AlertDialog dialog = new AlertDialog.Builder(this)
+            .setView(dialogContent)
+            .setCancelable(true)
+            .create();
+        dialog.show();
+    }
+
+    private void showActivationDialog() {
+        LinearLayout dialogContent = vBox();
+        dialogContent.setPadding(dp(20), dp(16), dp(20), dp(16));
+
+        // 标题图标
+        TextView iconTv = tv("🔐", C_PRIMARY, 40, Typeface.NORMAL);
+        iconTv.setGravity(Gravity.CENTER);
+        dialogContent.addView(iconTv);
+        dialogContent.addView(spacer(dp(8)));
+
+        // 标题
+        TextView titleTv = tv("激活智能迎宾", C_TEXT, 18, Typeface.BOLD);
+        titleTv.setGravity(Gravity.CENTER);
+        dialogContent.addView(titleTv);
+        dialogContent.addView(spacer(dp(6)));
+
+        // 状态
+        String statusText;
+        if (license.isTrialExpired()) {
+            statusText = "7天试用期已结束\n请输入激活码继续使用";
+        } else {
+            int remaining = license.getRemainingTrialDays();
+            statusText = "试用期剩余 " + remaining + " 天\n提前激活可永久使用";
+        }
+        TextView statusTv = tv(statusText, C_TEXT_2, 13, Typeface.NORMAL);
+        statusTv.setGravity(Gravity.CENTER);
+        statusTv.setLineSpacing(dp(3), 1f);
+        dialogContent.addView(statusTv);
+        dialogContent.addView(spacer(dp(16)));
+
+        // 价格卡片
+        LinearLayout priceCard = new LinearLayout(this);
+        priceCard.setOrientation(LinearLayout.VERTICAL);
+        priceCard.setGravity(Gravity.CENTER);
+        GradientDrawable priceBg = new GradientDrawable();
+        priceBg.setCornerRadius(dp(12));
+        priceBg.setColor(C_PRIMARY_LIGHT);
+        priceCard.setBackground(priceBg);
+        priceCard.setPadding(dp(20), dp(16), dp(20), dp(16));
+
+        TextView priceLabel = tv("激活价格", C_TEXT_2, 12, Typeface.NORMAL);
+        priceLabel.setGravity(Gravity.CENTER);
+        priceCard.addView(priceLabel);
+        priceCard.addView(spacer(dp(4)));
+        TextView priceValue = tv(LicenseManager.PRICE, C_PRIMARY, 32, Typeface.BOLD);
+        priceValue.setGravity(Gravity.CENTER);
+        priceCard.addView(priceValue);
+        priceCard.addView(spacer(dp(4)));
+        TextView priceHint = tv("一次激活 · 永久使用", C_TEXT_2, 11, Typeface.NORMAL);
+        priceHint.setGravity(Gravity.CENTER);
+        priceCard.addView(priceHint);
+        dialogContent.addView(priceCard, lp(-1, -2, 0, 0, 0, dp(16)));
+
+        // 激活码输入框
+        TextView inputLabel = tv("请输入激活码", C_TEXT, 14, Typeface.BOLD);
+        dialogContent.addView(inputLabel);
+        dialogContent.addView(spacer(dp(6)));
+
+        final EditText codeInput = new EditText(this);
+        codeInput.setHint("XXXX-XXXX-XXXX");
+        codeInput.setSingleLine(true);
+        codeInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
+        codeInput.setTextColor(C_TEXT);
+        codeInput.setHintTextColor(C_TEXT_HINT);
+        codeInput.setGravity(Gravity.CENTER);
+        codeInput.setLetterSpacing(0.1f);
+        GradientDrawable inputBg = new GradientDrawable();
+        inputBg.setCornerRadius(dp(8));
+        inputBg.setColor(Color.parseColor("#F8FAFC"));
+        inputBg.setStroke(dp(1), C_DIVIDER);
+        codeInput.setBackground(inputBg);
+        codeInput.setPadding(dp(12), dp(14), dp(12), dp(14));
+        dialogContent.addView(codeInput, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        // 错误提示
+        final TextView errorTv = tv("", C_DANGER, 12, Typeface.NORMAL);
+        errorTv.setGravity(Gravity.CENTER);
+        errorTv.setVisibility(View.GONE);
+        dialogContent.addView(errorTv);
+
+        // 设备指纹（小字）
+        TextView deviceTv = tv("设备指纹: " + license.getDeviceFingerprint(), C_TEXT_HINT, 10, Typeface.NORMAL);
+        deviceTv.setGravity(Gravity.CENTER);
+        deviceTv.setPadding(0, dp(8), 0, 0);
+        dialogContent.addView(deviceTv);
+
+        // 激活按钮
+        Button activateBtn = new Button(this);
+        activateBtn.setText("立即激活");
+        activateBtn.setAllCaps(false);
+        activateBtn.setTextColor(Color.WHITE);
+        activateBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
+        activateBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        activateBtn.setPadding(dp(20), dp(16), dp(20), dp(16));
+        GradientDrawable actBg = new GradientDrawable();
+        actBg.setCornerRadius(dp(12));
+        actBg.setColor(C_PRIMARY);
+        activateBtn.setBackground(actBg);
+
+        // 购买提示
+        TextView buyHint = tv("💡 激活码请通过官方渠道获取", C_TEXT_2, 11, Typeface.NORMAL);
+        buyHint.setGravity(Gravity.CENTER);
+        buyHint.setPadding(0, dp(6), 0, 0);
+
+        final AlertDialog[] dialogHolder = new AlertDialog[1];
+
+        activateBtn.setOnClickListener(v -> {
+            String code = codeInput.getText().toString().trim();
+            if (code.isEmpty()) {
+                errorTv.setText("请输入激活码");
+                errorTv.setVisibility(View.VISIBLE);
+                return;
+            }
+            if (license.activate(code)) {
+                errorTv.setVisibility(View.GONE);
+                licenseBlocked = false;
+                Toast.makeText(this, "✅ 激活成功！感谢您的支持", Toast.LENGTH_LONG).show();
+                if (dialogHolder[0] != null) dialogHolder[0].dismiss();
+                // 刷新当前页
+                switchTab(currentTab);
+            } else {
+                errorTv.setText("❌ 激活码无效，请检查后重试");
+                errorTv.setVisibility(View.VISIBLE);
+                // 抖动动画
+                codeInput.animate().translationX(dp(8)).setDuration(50)
+                        .withEndAction(() -> codeInput.animate().translationX(-dp(8)).setDuration(50)
+                        .withEndAction(() -> codeInput.animate().translationX(0).setDuration(50)).start()).start();
+            }
+        });
+
+        dialogContent.addView(activateBtn, lp(-1, -2, 0, dp(8), 0, 0));
+        dialogContent.addView(buyHint);
+
+        dialogHolder[0] = new AlertDialog.Builder(this)
+                .setView(dialogContent)
+                .setCancelable(!license.isTrialExpired())
+                .show();
+    }
+
+    private void playAlarmSound() {
+        try {
+            Uri alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
+            if (alarmUri == null) {
+                alarmUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION);
+            }
+            final Ringtone ringtone = RingtoneManager.getRingtone(this, alarmUri);
+            if (ringtone != null) {
+                ringtone.play();
+                // 5秒后停止
+                new java.util.Timer().schedule(new java.util.TimerTask() {
+                    @Override
+                    public void run() {
+                        if (ringtone.isPlaying()) {
+                            ringtone.stop();
+                        }
+                    }
+                }, 5000);
+            }
+        } catch (Exception e) {
+            // 静默失败
+        }
+    }
+}

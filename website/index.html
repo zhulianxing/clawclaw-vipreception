@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>卷积·迎宾 - VIP客户到店识别系统 · CONVNET</title>
+    <meta name="description" content="基于AI的门店VIP客户智能识别系统，客户到店自动通知店员，离线运行隐私安全。">
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1E293B; background: #F8FAFC; }
+        .hero {
+            background: linear-gradient(135deg, #B45309 0%, #D97706 100%);
+            color: white; padding: 80px 20px 100px; text-align: center;
+        }
+        .hero-icon { width: 120px; height: 120px; border-radius: 28px; margin: 0 auto 24px; background: white; display: flex; align-items: center; justify-content: center; font-size: 56px; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+        .hero h1 { font-size: 42px; font-weight: 800; margin-bottom: 12px; }
+        .hero .tagline { font-size: 18px; opacity: 0.9; margin-bottom: 32px; }
+        .hero .badges { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; }
+        .hero .badge { background: rgba(255,255,255,0.2); backdrop-filter: blur(10px); padding: 8px 16px; border-radius: 20px; font-size: 14px; }
+        .download-btn { display: inline-block; margin-top: 32px; padding: 16px 48px; background: white; color: #B45309; font-size: 18px; font-weight: 700; border-radius: 30px; text-decoration: none; box-shadow: 0 10px 30px rgba(0,0,0,0.15); transition: transform 0.2s; }
+        .download-btn:hover { transform: translateY(-2px); }
+        .features { max-width: 1000px; margin: -60px auto 0; padding: 0 20px; position: relative; z-index: 1; }
+        .feature-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 20px; }
+        .feature-card { background: white; border-radius: 16px; padding: 28px; box-shadow: 0 4px 20px rgba(0,0,0,0.06); }
+        .feature-card .icon { font-size: 36px; margin-bottom: 12px; }
+        .feature-card h3 { font-size: 18px; font-weight: 700; margin-bottom: 8px; }
+        .feature-card p { font-size: 14px; color: #64748B; line-height: 1.6; }
+        .screenshots { max-width: 1000px; margin: 80px auto; padding: 0 20px; }
+        .section-title { text-align: center; font-size: 32px; font-weight: 800; margin-bottom: 40px; }
+        .shot-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; }
+        .shot-item { background: white; border-radius: 16px; padding: 24px; text-align: center; box-shadow: 0 2px 12px rgba(0,0,0,0.05); }
+        .shot-item .shot-icon { font-size: 48px; margin-bottom: 12px; }
+        .shot-item h4 { font-size: 16px; margin-bottom: 6px; }
+        .shot-item p { font-size: 13px; color: #64748B; }
+        .tech { background: white; padding: 80px 20px; }
+        .tech-inner { max-width: 800px; margin: 0 auto; text-align: center; }
+        .tech-tags { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-top: 24px; }
+        .tech-tag { padding: 8px 20px; background: #FEF3C7; color: #B45309; border-radius: 20px; font-size: 14px; font-weight: 500; }
+        .footer { background: #1E293B; color: #94A3B8; padding: 40px 20px; text-align: center; font-size: 14px; }
+        .footer a { color: #FBBF24; text-decoration: none; }
+        @media (max-width: 600px) { .hero h1 { font-size: 30px; } .hero .tagline { font-size: 15px; } .section-title { font-size: 24px; } }
+    </style>
+</head>
+<body>
+<section class="hero">
+    <div class="hero-icon">🛍️</div>
+    <h1>卷积·迎宾</h1>
+    <p class="tagline">VIP客户到店识别 · 自动通知店员 · 离线隐私</p>
+    <div class="badges">
+        <span class="badge">🔒 完全离线</span>
+        <span class="badge">🎯 VIP识别</span>
+        <span class="badge">📱 Android 10+</span>
+        <span class="badge">⚡ 即装即用</span>
+    </div>
+    <a href="./download.html" class="download-btn">下载 APK v1.0.0</a>
+</section>
+<section class="features">
+    <div class="feature-grid">
+        <div class="feature-card"><div class="icon">🎯</div><h3>VIP到店识别</h3><p>多维度特征匹配，VIP客户到店0.5秒内通知店员，不错过任何重要客户</p></div>
+        <div class="feature-card"><div class="icon">👥</div><h3>客户档案库</h3><p>录入VIP客户照片、姓名、偏好，到店自动弹出客户信息卡</p></div>
+        <div class="feature-card"><div class="icon">🔔</div><h3>实时通知</h3><p>VIP客户识别后弹窗提醒+震动，5秒倒计时自动恢复值守</p></div>
+        <div class="feature-card"><div class="icon">📊</div><h3>到店统计</h3><p>今日到店数、客户分布、最近活动时间线，数据一目了然</p></div>
+        <div class="feature-card"><div class="icon">⚙️</div><h3>灵活设置</h3><p>匹配阈值、去重间隔、通知方式，一切尽在掌控</p></div>
+        <div class="feature-card"><div class="icon">🔒</div><h3>隐私优先</h3><p>完全本地运行，客户数据存储在手机私有目录，不上传云端</p></div>
+    </div>
+</section>
+<section class="screenshots">
+    <h2 class="section-title">五大功能页面</h2>
+    <div class="shot-grid">
+        <div class="shot-item"><div class="shot-icon">📷</div><h4>实时值守</h4><p>相机预览 + 阈值调节 + 一键值守</p></div>
+        <div class="shot-item"><div class="shot-icon">👥</div><h4>VIP客户库</h4><p>客户录入 + 照片上传 + 列表管理</p></div>
+        <div class="shot-item"><div class="shot-icon">📸</div><h4>到店记录</h4><p>到店时间 + 截图 + 导出CSV</p></div>
+        <div class="shot-item"><div class="shot-icon">📊</div><h4>统计分析</h4><p>数据概览 + 分布柱状图 + 活动时间线</p></div>
+        <div class="shot-item"><div class="shot-icon">⚙️</div><h4>设置</h4><p>去重间隔 + 记录上限 + 震动开关</p></div>
+    </div>
+</section>
+<section class="tech">
+    <div class="tech-inner">
+        <h2 class="section-title">技术架构</h2>
+        <p style="color: #64748B; font-size: 16px; line-height: 1.8;">
+            基于 Android CameraX 构建的离线VIP客户识别系统<br>
+            采用128维特征向量 + 六维度融合评分算法<br>
+            所有数据本地存储，隐私安全有保障
+        </p>
+        <div class="tech-tags">
+            <span class="tech-tag">Android CameraX</span>
+            <span class="tech-tag">128维特征匹配</span>
+            <span class="tech-tag">离线运行</span>
+            <span class="tech-tag">14天试用</span>
+            <span class="tech-tag">¥198 买断</span>
+        </div>
+    </div>
+</section>
+<footer class="footer">
+    <p>© 2026 卷积·迎宾 · 版本 1.0.0</p>
+    <p style="margin-top: 8px;">卷积 CONVNET · com.storeguard.vipreception · 支持 Android 10+</p>
+    <p style="margin-top: 8px;">联系我们：zhulianxing@139.me</p>
+</footer>
+</body>
+</html>

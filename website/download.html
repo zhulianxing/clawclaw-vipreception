@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>下载 卷积·迎宾 v1.0.0</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; color: #1E293B; background: #FEF3C7; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+        .card { background: white; border-radius: 24px; padding: 48px 40px; max-width: 480px; width: 90%; box-shadow: 0 20px 60px rgba(0,0,0,0.1); text-align: center; }
+        .icon { font-size: 64px; margin-bottom: 16px; }
+        h1 { font-size: 28px; font-weight: 800; margin-bottom: 8px; color: #B45309; }
+        .version { font-size: 16px; color: #92400E; margin-bottom: 32px; }
+        .info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; margin-bottom: 32px; }
+        .info-item { background: #FEF3C7; border-radius: 12px; padding: 16px; }
+        .info-label { font-size: 12px; color: #92400E; margin-bottom: 4px; }
+        .info-value { font-size: 16px; font-weight: 700; color: #1E293B; }
+        .download-btn { display: block; width: 100%; padding: 18px; background: linear-gradient(135deg, #B45309, #D97706); color: white; font-size: 18px; font-weight: 700; border-radius: 16px; text-decoration: none; border: none; cursor: pointer; box-shadow: 0 8px 24px rgba(180,83,9,0.3); transition: transform 0.2s; }
+        .download-btn:hover { transform: translateY(-2px); }
+        .trial-info { margin-top: 24px; padding: 16px; background: #FFFBEB; border: 1px solid #FDE68A; border-radius: 12px; font-size: 14px; color: #92400E; line-height: 1.6; }
+        .footer { margin-top: 24px; font-size: 13px; color: #94A3B8; }
+        .footer a { color: #B45309; text-decoration: none; }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="icon">🛍️</div>
+    <h1>卷积·迎宾</h1>
+    <p class="version">VIP客户到店识别系统 v1.0.0</p>
+    <div class="info-grid">
+        <div class="info-item"><div class="info-label">版本</div><div class="info-value">1.0.0</div></div>
+        <div class="info-item"><div class="info-label">包名</div><div class="info-value">com.storeguard.vipreception</div></div>
+        <div class="info-item"><div class="info-label">大小</div><div class="info-value">7.6 MB</div></div>
+        <div class="info-item"><div class="info-label">最低系统</div><div class="info-value">Android 10+</div></div>
+    </div>
+    <div style="margin-bottom:16px;font-size:14px;color:#92400E;">更新日期：2026-06-26</div>
+    <button class="download-btn" onclick="downloadApk()">⬇️ 立即下载 APK</button>
+    <div class="trial-info">
+        🎁 <strong>14天免费试用</strong> · 到期后 ¥198 永久买断<br>
+        安装后自动开始试用，无需注册
+    </div>
+    <div class="footer">
+        <p>需要帮助？联系 <a href="mailto:zhulianxing@139.me">zhulianxing@139.me</a></p>
+        <p style="margin-top:8px;"><a href="./index.html">← 返回首页</a></p>
+    </div>
+</div>
+<script>
+function downloadApk() {
+    fetch('/storeguard.apk.png')
+        .then(r => r.blob())
+        .then(blob => {
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'smart-reception-v1.0.0.apk';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        })
+        .catch(() => { window.location.href = '/storeguard.apk.png'; });
+}
+</script>
+</body>
+</html>
