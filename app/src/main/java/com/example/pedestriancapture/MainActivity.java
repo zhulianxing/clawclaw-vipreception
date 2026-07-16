@@ -49,6 +49,7 @@ import com.example.pedestriancapture.data.LocalStore;
 import com.example.pedestriancapture.data.PersonTarget;
 import com.example.pedestriancapture.data.AppConfig;
 import com.example.pedestriancapture.data.LicenseManager;
+import com.example.pedestriancapture.data.Web3LicenseManager;
 import com.example.pedestriancapture.vision.DuplicateGuard;
 import com.example.pedestriancapture.vision.MatchResult;
 import com.example.pedestriancapture.vision.FeatureExtractor;
@@ -88,6 +89,7 @@ public class MainActivity extends ComponentActivity {
     private LocalStore store;
     private AppConfig config;
     private LicenseManager license;
+    private Web3LicenseManager web3License;
     private final OfflineMatcher matcher = new OfflineMatcher();
     private final DuplicateGuard duplicateGuard = new DuplicateGuard();
     private boolean licenseBlocked = false; // 试用过期且未激活
@@ -116,6 +118,7 @@ public class MainActivity extends ComponentActivity {
         store = new LocalStore(this);
         config = new AppConfig(this);
         license = new LicenseManager(this);
+        web3License = new Web3LicenseManager(this, "com.storeguard.vipreception");
         threshold = config.getThreshold();
         duplicateGuard.setIntervalSeconds(config.getDedupInterval());
         buildShell();
@@ -1952,13 +1955,12 @@ public class MainActivity extends ComponentActivity {
     // ==================== 授权管理 ====================
 
     private void checkLicense() {
-
-        // 降级到旧版激活码验证
-        if (license.isActivated()) {
+        // 双模激活：离线激活码 OR 链上NFT
+        if (license.isActivated() || web3License.isActivated()) {
             licenseBlocked = false;
             return;
         }
-        if (license.isTrialExpired()) {
+        if (license.isTrialExpired() && web3License.isTrialExpired()) {
             licenseBlocked = true;
             if (!license.isTrialExpiredShown()) {
                 license.setTrialExpiredShown(true);
@@ -1977,28 +1979,27 @@ public class MainActivity extends ComponentActivity {
 
 
     private void showActivationDialog() {
+        final int activeTab = currentTab;
         LinearLayout dialogContent = vBox();
         dialogContent.setPadding(dp(20), dp(16), dp(20), dp(16));
 
-        // 标题图标
+        // 标题
         TextView iconTv = tv("🔐", C_PRIMARY, 40, Typeface.NORMAL);
         iconTv.setGravity(Gravity.CENTER);
         dialogContent.addView(iconTv);
         dialogContent.addView(spacer(dp(8)));
 
-        // 标题
         TextView titleTv = tv("激活智能迎宾", C_TEXT, 18, Typeface.BOLD);
         titleTv.setGravity(Gravity.CENTER);
         dialogContent.addView(titleTv);
         dialogContent.addView(spacer(dp(6)));
 
-        // 状态
         String statusText;
         if (license.isTrialExpired()) {
-            statusText = "7天试用期已结束\n请输入激活码继续使用";
+            statusText = "7天试用期已结束\n选择一种方式激活继续使用";
         } else {
             int remaining = license.getRemainingTrialDays();
-            statusText = "试用期剩余 " + remaining + " 天\n提前激活可永久使用";
+            statusText = "试用期剩余 " + remaining + " 天\n选择一种方式激活可永久使用";
         }
         TextView statusTv = tv(statusText, C_TEXT_2, 13, Typeface.NORMAL);
         statusTv.setGravity(Gravity.CENTER);
@@ -2006,108 +2007,176 @@ public class MainActivity extends ComponentActivity {
         dialogContent.addView(statusTv);
         dialogContent.addView(spacer(dp(16)));
 
-        // 价格卡片
-        LinearLayout priceCard = new LinearLayout(this);
-        priceCard.setOrientation(LinearLayout.VERTICAL);
-        priceCard.setGravity(Gravity.CENTER);
-        GradientDrawable priceBg = new GradientDrawable();
-        priceBg.setCornerRadius(dp(12));
-        priceBg.setColor(C_PRIMARY_LIGHT);
-        priceCard.setBackground(priceBg);
-        priceCard.setPadding(dp(20), dp(16), dp(20), dp(16));
+        // ===== 双选项 tab 切换 =====
+        final LinearLayout tabContainer = new LinearLayout(this);
+        final LinearLayout web3Panel = new LinearLayout(this);
+        final LinearLayout codePanel = new LinearLayout(this);
 
-        TextView priceLabel = tv("激活价格", C_TEXT_2, 12, Typeface.NORMAL);
-        priceLabel.setGravity(Gravity.CENTER);
-        priceCard.addView(priceLabel);
-        priceCard.addView(spacer(dp(4)));
-        TextView priceValue = tv(LicenseManager.PRICE, C_PRIMARY, 32, Typeface.BOLD);
-        priceValue.setGravity(Gravity.CENTER);
-        priceCard.addView(priceValue);
-        priceCard.addView(spacer(dp(4)));
-        TextView priceHint = tv("一次激活 · 永久使用", C_TEXT_2, 11, Typeface.NORMAL);
-        priceHint.setGravity(Gravity.CENTER);
-        priceCard.addView(priceHint);
-        dialogContent.addView(priceCard, lp(-1, -2, 0, 0, 0, dp(16)));
+        // 双选项按钮
+        LinearLayout tabRow = hBox();
+        tabRow.setGravity(Gravity.CENTER);
 
-        // 激活码输入框
-        TextView inputLabel = tv("请输入激活码", C_TEXT, 14, Typeface.BOLD);
-        dialogContent.addView(inputLabel);
-        dialogContent.addView(spacer(dp(6)));
+        GradientDrawable tabOnBg = new GradientDrawable(); tabOnBg.setCornerRadius(dp(8)); tabOnBg.setColor(C_PRIMARY);
+        GradientDrawable tabOffBg = new GradientDrawable(); tabOffBg.setCornerRadius(dp(8)); tabOffBg.setColor(Color.parseColor("#E2E8F0"));
 
-        final EditText codeInput = new EditText(this);
-        codeInput.setHint("XXXX-XXXX-XXXX");
-        codeInput.setSingleLine(true);
-        codeInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18);
-        codeInput.setTextColor(C_TEXT);
-        codeInput.setHintTextColor(C_TEXT_HINT);
-        codeInput.setGravity(Gravity.CENTER);
-        codeInput.setLetterSpacing(0.1f);
-        GradientDrawable inputBg = new GradientDrawable();
-        inputBg.setCornerRadius(dp(8));
-        inputBg.setColor(Color.parseColor("#F8FAFC"));
-        inputBg.setStroke(dp(1), C_DIVIDER);
-        codeInput.setBackground(inputBg);
-        codeInput.setPadding(dp(12), dp(14), dp(12), dp(14));
-        dialogContent.addView(codeInput, lp(-1, -2, 0, 0, 0, dp(8)));
+        Button tabWeb3 = new Button(this); tabWeb3.setText("🔗 导入Polygon钱包"); tabWeb3.setAllCaps(false);
+        tabWeb3.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); tabWeb3.setPadding(dp(12), dp(8), dp(12), dp(8));
+        Button tabCode = new Button(this); tabCode.setText("🔑 输入离线激活码"); tabCode.setAllCaps(false);
+        tabCode.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13); tabCode.setPadding(dp(12), dp(8), dp(12), dp(8));
 
-        // 错误提示
-        final TextView errorTv = tv("", C_DANGER, 12, Typeface.NORMAL);
-        errorTv.setGravity(Gravity.CENTER);
-        errorTv.setVisibility(View.GONE);
-        dialogContent.addView(errorTv);
+        final int[] activePane = {0};
+        Runnable refreshTabs = () -> {
+            if (activePane[0] == 0) {
+                tabWeb3.setBackground(tabOnBg); tabWeb3.setTextColor(Color.WHITE);
+                tabCode.setBackground(tabOffBg); tabCode.setTextColor(C_TEXT_2);
+                web3Panel.setVisibility(View.VISIBLE); codePanel.setVisibility(View.GONE);
+            } else {
+                tabCode.setBackground(tabOnBg); tabCode.setTextColor(Color.WHITE);
+                tabWeb3.setBackground(tabOffBg); tabWeb3.setTextColor(C_TEXT_2);
+                codePanel.setVisibility(View.VISIBLE); web3Panel.setVisibility(View.GONE);
+            }
+        };
 
-        // 设备指纹（小字）
-        TextView deviceTv = tv("设备指纹: " + license.getDeviceFingerprint(), C_TEXT_HINT, 10, Typeface.NORMAL);
-        deviceTv.setGravity(Gravity.CENTER);
-        deviceTv.setPadding(0, dp(8), 0, 0);
-        dialogContent.addView(deviceTv);
+        tabWeb3.setOnClickListener(v -> { activePane[0] = 0; refreshTabs.run(); });
+        tabCode.setOnClickListener(v -> { activePane[0] = 1; refreshTabs.run(); });
+        tabRow.addView(tabWeb3, new LinearLayout.LayoutParams(0, -2, 1));
+        tabRow.addView(spacer(dp(8)));
+        tabRow.addView(tabCode, new LinearLayout.LayoutParams(0, -2, 1));
 
-        // 激活按钮
-        Button activateBtn = new Button(this);
-        activateBtn.setText("立即激活");
-        activateBtn.setAllCaps(false);
-        activateBtn.setTextColor(Color.WHITE);
-        activateBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16);
-        activateBtn.setTypeface(Typeface.DEFAULT_BOLD);
-        activateBtn.setPadding(dp(20), dp(16), dp(20), dp(16));
-        GradientDrawable actBg = new GradientDrawable();
-        actBg.setCornerRadius(dp(12));
-        actBg.setColor(C_PRIMARY);
-        activateBtn.setBackground(actBg);
+        tabContainer.addView(tabRow, lp(-1, -2, 0, 0, 0, dp(12)));
 
-        // 购买提示
-        TextView buyHint = tv("💡 激活码请通过官方渠道获取", C_TEXT_2, 11, Typeface.NORMAL);
-        buyHint.setGravity(Gravity.CENTER);
-        buyHint.setPadding(0, dp(6), 0, 0);
+        // ===== Panel 1: Polygon钱包导入 =====
+        web3Panel.setOrientation(LinearLayout.VERTICAL);
+        web3Panel.addView(tv("输入Polygon钱包私钥（64位hex）", C_TEXT, 13, Typeface.NORMAL));
+        web3Panel.addView(spacer(dp(4)));
+        final EditText pkInput = new EditText(this);
+        pkInput.setHint("0x... 或 64位hex私钥");
+        pkInput.setSingleLine(true); pkInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        pkInput.setTextColor(C_TEXT); pkInput.setHintTextColor(C_TEXT_HINT);
+        GradientDrawable pkBg = new GradientDrawable(); pkBg.setCornerRadius(dp(8)); pkBg.setColor(Color.parseColor("#F8FAFC")); pkBg.setStroke(dp(1), C_DIVIDER);
+        pkInput.setBackground(pkBg); pkInput.setPadding(dp(12), dp(14), dp(12), dp(14));
+        web3Panel.addView(pkInput, lp(-1, -2, 0, 0, 0, dp(4)));
 
-        final AlertDialog[] dialogHolder = new AlertDialog[1];
+        if (web3License.hasWallet()) {
+            TextView addrTv = tv("已导入: " + web3License.getAddress(), C_TEXT_2, 11, Typeface.NORMAL);
+            addrTv.setPadding(0, dp(4), 0, 0);
+            web3Panel.addView(addrTv);
+        }
 
-        activateBtn.setOnClickListener(v -> {
-            String code = codeInput.getText().toString().trim();
-            if (code.isEmpty()) {
-                errorTv.setText("请输入激活码");
-                errorTv.setVisibility(View.VISIBLE);
+        final TextView web3ErrorTv = tv("", C_DANGER, 12, Typeface.NORMAL);
+        web3ErrorTv.setGravity(Gravity.CENTER); web3ErrorTv.setVisibility(View.GONE);
+        web3Panel.addView(web3ErrorTv, lp(-1, -2, 0, dp(4), 0, 0));
+
+        Button importBtn = new Button(this);
+        importBtn.setText(web3License.hasWallet() ? "🔄 重新验证NFT" : "📥 导入并验证NFT");
+        importBtn.setAllCaps(false); importBtn.setTextColor(Color.WHITE);
+        importBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        importBtn.setPadding(dp(20), dp(12), dp(20), dp(12));
+        GradientDrawable impBg = new GradientDrawable(); impBg.setCornerRadius(dp(10)); impBg.setColor(C_PRIMARY);
+        importBtn.setBackground(impBg);
+        importBtn.setOnClickListener(v -> {
+            String pk = pkInput.getText().toString().trim();
+            if (pk.isEmpty() && !web3License.hasWallet()) {
+                web3ErrorTv.setText("请先输入私钥"); web3ErrorTv.setVisibility(View.VISIBLE);
                 return;
             }
+            if (!pk.isEmpty() && !web3License.hasWallet()) {
+                if (!web3License.importWallet(pk)) {
+                    web3ErrorTv.setText("❌ 私钥格式无效"); web3ErrorTv.setVisibility(View.VISIBLE);
+                    return;
+                }
+            }
+            importBtn.setText("⏳ 链上验证中...");
+            importBtn.setEnabled(false);
+            web3License.verifyLicense((verified, msg, appId) -> runOnUiThread(() -> {
+                importBtn.setText(web3License.hasWallet() ? "🔄 重新验证NFT" : "📥 导入并验证NFT");
+                importBtn.setEnabled(true);
+                if (verified) {
+                    web3ErrorTv.setTextColor(C_SUCCESS);
+                    web3ErrorTv.setText("✅ NFT验证通过！AppId: " + appId);
+                    web3ErrorTv.setVisibility(View.VISIBLE);
+                    licenseBlocked = false;
+                    Toast.makeText(this, "✅ NFT激活成功！感谢您的支持", Toast.LENGTH_LONG).show();
+                    new android.os.Handler().postDelayed(() -> switchTab(activeTab), 1500);
+                } else {
+                    web3ErrorTv.setTextColor(C_DANGER);
+                    web3ErrorTv.setText("❌ " + msg);
+                    web3ErrorTv.setVisibility(View.VISIBLE);
+                }
+            }));
+        });
+        web3Panel.addView(importBtn, lp(-1, -2, 0, dp(6), 0, 0));
+
+        TextView web3Hint = tv("💡 在 daix.fun 购买数字凭证后可在此导入激活", C_TEXT_2, 11, Typeface.NORMAL);
+        web3Hint.setGravity(Gravity.CENTER);
+        web3Panel.addView(web3Hint);
+
+        tabContainer.addView(web3Panel);
+
+        // ===== Panel 2: 离线激活码 =====
+        codePanel.setOrientation(LinearLayout.VERTICAL);
+
+        LinearLayout priceCard = new LinearLayout(this);
+        priceCard.setOrientation(LinearLayout.VERTICAL); priceCard.setGravity(Gravity.CENTER);
+        GradientDrawable priceBg = new GradientDrawable(); priceBg.setCornerRadius(dp(12)); priceBg.setColor(C_PRIMARY_LIGHT);
+        priceCard.setBackground(priceBg); priceCard.setPadding(dp(20), dp(16), dp(20), dp(16));
+        TextView priceLabel = tv("激活价格", C_TEXT_2, 12, Typeface.NORMAL); priceLabel.setGravity(Gravity.CENTER);
+        priceCard.addView(priceLabel); priceCard.addView(spacer(dp(4)));
+        TextView priceValue = tv(LicenseManager.PRICE, C_PRIMARY, 32, Typeface.BOLD); priceValue.setGravity(Gravity.CENTER);
+        priceCard.addView(priceValue); priceCard.addView(spacer(dp(4)));
+        priceCard.addView(tv("一次激活 · 永久使用", C_TEXT_2, 11, Typeface.NORMAL));
+        codePanel.addView(priceCard, lp(-1, -2, 0, 0, 0, dp(12)));
+
+        codePanel.addView(tv("请输入激活码", C_TEXT, 14, Typeface.BOLD));
+        codePanel.addView(spacer(dp(6)));
+        final EditText codeInput = new EditText(this);
+        codeInput.setHint("XXXX-XXXX-XXXX"); codeInput.setSingleLine(true);
+        codeInput.setTextSize(TypedValue.COMPLEX_UNIT_SP, 18); codeInput.setTextColor(C_TEXT); codeInput.setHintTextColor(C_TEXT_HINT);
+        codeInput.setGravity(Gravity.CENTER); codeInput.setLetterSpacing(0.1f);
+        GradientDrawable inputBg = new GradientDrawable(); inputBg.setCornerRadius(dp(8)); inputBg.setColor(Color.parseColor("#F8FAFC")); inputBg.setStroke(dp(1), C_DIVIDER);
+        codeInput.setBackground(inputBg); codeInput.setPadding(dp(12), dp(14), dp(12), dp(14));
+        codePanel.addView(codeInput, lp(-1, -2, 0, 0, 0, dp(8)));
+
+        final TextView codeErrorTv = tv("", C_DANGER, 12, Typeface.NORMAL);
+        codeErrorTv.setGravity(Gravity.CENTER); codeErrorTv.setVisibility(View.GONE);
+        codePanel.addView(codeErrorTv);
+
+        TextView deviceTv = tv("设备指纹: " + license.getDeviceFingerprint(), C_TEXT_HINT, 10, Typeface.NORMAL);
+        deviceTv.setGravity(Gravity.CENTER); deviceTv.setPadding(0, dp(8), 0, 0);
+        codePanel.addView(deviceTv);
+
+        Button activateBtn = new Button(this);
+        activateBtn.setText("立即激活"); activateBtn.setAllCaps(false); activateBtn.setTextColor(Color.WHITE);
+        activateBtn.setTextSize(TypedValue.COMPLEX_UNIT_SP, 16); activateBtn.setTypeface(Typeface.DEFAULT_BOLD);
+        activateBtn.setPadding(dp(20), dp(16), dp(20), dp(16));
+        GradientDrawable actBg = new GradientDrawable(); actBg.setCornerRadius(dp(12)); actBg.setColor(C_PRIMARY);
+        activateBtn.setBackground(actBg);
+
+        final AlertDialog[] dialogHolder = new AlertDialog[1];
+        activateBtn.setOnClickListener(v -> {
+            String code = codeInput.getText().toString().trim();
+            if (code.isEmpty()) { codeErrorTv.setText("请输入激活码"); codeErrorTv.setVisibility(View.VISIBLE); return; }
             if (license.activate(code)) {
-                errorTv.setVisibility(View.GONE);
+                codeErrorTv.setVisibility(View.GONE);
                 licenseBlocked = false;
                 Toast.makeText(this, "✅ 激活成功！感谢您的支持", Toast.LENGTH_LONG).show();
                 if (dialogHolder[0] != null) dialogHolder[0].dismiss();
-                // 刷新当前页
-                switchTab(currentTab);
+                switchTab(activeTab);
             } else {
-                errorTv.setText("❌ 激活码无效，请检查后重试");
-                errorTv.setVisibility(View.VISIBLE);
-                // 抖动动画
+                codeErrorTv.setText("❌ 激活码无效，请检查后重试");
+                codeErrorTv.setVisibility(View.VISIBLE);
                 codeInput.animate().translationX(dp(8)).setDuration(50)
-                        .withEndAction(() -> codeInput.animate().translationX(-dp(8)).setDuration(50)
-                        .withEndAction(() -> codeInput.animate().translationX(0).setDuration(50)).start()).start();
+                    .withEndAction(() -> codeInput.animate().translationX(-dp(8)).setDuration(50)
+                    .withEndAction(() -> codeInput.animate().translationX(0).setDuration(50)).start()).start();
             }
         });
+        codePanel.addView(activateBtn, lp(-1, -2, 0, dp(8), 0, 0));
+        codePanel.addView(tv("💡 激活码请通过官方渠道获取", C_TEXT_2, 11, Typeface.NORMAL));
 
-        dialogContent.addView(activateBtn, lp(-1, -2, 0, dp(8), 0, 0));
-        dialogContent.addView(buyHint);
+        tabContainer.addView(codePanel);
+
+        dialogContent.addView(tabContainer);
+        refreshTabs.run();
 
         dialogHolder[0] = new AlertDialog.Builder(this)
                 .setView(dialogContent)
